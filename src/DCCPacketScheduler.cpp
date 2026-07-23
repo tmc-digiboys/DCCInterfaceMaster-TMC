@@ -107,8 +107,16 @@ void DCCPacketScheduler::setup(uint8_t pin, uint8_t pin2, uint8_t steps, uint8_t
 
 	setpower(power, true);	//DCC signal on (active) and inform other over the new power state!
 
-	slotFullNext = 0;	//don't override, start with free slots
-	TrntFormat = format;	//The way BasicAccessory Messages Addressing works (Intellbox/ROCO/etc)
+	slotFullNext = 0;
+	if (format == LENZ) {
+		TrntFormat = 0;
+		DCCPacket::trntFormat          = ROCO;  // offset 3: client 1 -> lin 4 -> wrapat correct
+		DCCPacket::nonLinearAddressing = true;
+	} else {
+		TrntFormat = 0;
+		DCCPacket::trntFormat          = format; // ROCO=3 of IB=7
+		DCCPacket::nonLinearAddressing = false;
+	}
 	DCCdefaultSteps = steps;
 
 	ProgState = ProgStart;	//default Direct CV Zustand
@@ -140,8 +148,36 @@ void DCCPacketScheduler::disable_additional_DCC_output(void)
 }
 
 //---------------------------------------------------------------------------------
+bool DCCPacketScheduler::isInServiceMode(void) const {
+    return dccPacketEngine.isServiceModeRepeating();
+}
+
+void DCCPacketScheduler::setAckReceived(void) {
+    // External module signals a valid ACK — set status immediately SUCCESS
+    if (current_ack_status == WAIT_FOR_ACK || current_ack_status == ACK_DETECTED) {
+        current_ack_status = ACK_READ_SUCCESS;
+    }
+}
+
 void DCCPacketScheduler::loadEEPROMconfig(void)
 {
+  // If an external configuration has been provided, use that instead of EEPROM
+  if (_hasExtCfg) {
+    uint8_t railcom     = (_extCfg.railcom       >= 0) ? (uint8_t)_extCfg.railcom      : 0x01;
+    uint8_t progRdMode  = (_extCfg.progReadMode  >= 0) ? (uint8_t)_extCfg.progReadMode  : 0x03;
+    uint8_t progRep     = (_extCfg.progRepeat    >= 7) ? (uint8_t)_extCfg.progRepeat    : OPS_MODE_PROGRAMMING_REPEAT;
+    uint8_t rstSRep     = (_extCfg.rstSRepeat    >= 0) ? (uint8_t)_extCfg.rstSRepeat    : RESET_START_REPEAT;
+    uint8_t rstCRep     = (_extCfg.rstCRepeat    >= 0) ? (uint8_t)_extCfg.rstCRepeat    : RESET_CONT_REPEAT;
+    dccPacketEngine.setRailCom(railcom);
+    ProgReadMode = progRdMode;
+    ProgRepeat   = progRep;
+    RSTsRepeat   = rstSRep;
+    RSTcRepeat   = rstCRep;
+    dccPacketEngine.setServiceModeMaxRepeats(ProgRepeat);
+    return;
+  }
+
+  // Fallback: original EEPROM reading
   #if defined(ARDUINO_ARCH_RP2040)
     EEPROM.begin(256);                         // EEPROM size
   #endif
@@ -254,19 +290,14 @@ bool DCCPacketScheduler::setSpeed14(uint16_t address, uint8_t speed)
 	if ((LokDataUpdate[slot].adr >> 14) != DCC14)  //0=>14steps, write speed steps into register
 		LokDataUpdate[slot].adr = (LokDataUpdate[slot].adr & 0x3FFF) | (DCC14 << 14);
 
-	uint8_t speed_data_uint8_ts[] = {0x40};		//speed indecator
-	/*
-    if (speed == 1) //estop!
-		//return eStop(address);//
-		speed_data_uint8_ts[0] |= 0x01; //estop
-    else if (speed == 0) //regular stop!
-		speed_data_uint8_ts[0] |= 0x00; //stop
-    else //movement
-		speed_data_uint8_ts[0] |= map(speed, 2, 127, 2, 15); //convert from [2-127] to [1-14]
-    speed_data_uint8_ts[0] |= (0x20 * bitRead(speed, 7)); //flip bit 3 to indicate direction;
-	*/
-	speed_data_uint8_ts[0] |= speed & 0x1F;			//5 Bit Speed
-	speed_data_uint8_ts[0] |= (speed & 0x80) >> 2;	//Dir
+	// DCC 14-stap G-GGGG shuffle: bit4=G0(LSB), bits2-0=G3G2G1, G4=0
+	// Input: bit7=richting, bits3-0=logische stap 0..15
+	uint8_t v   = speed & 0x0F;
+	uint8_t dir = (speed & 0x80) ? 0x20 : 0x00;
+	uint8_t shuffled = ((v & 0x01) << 4)   // G0 -> bit4
+	               | ((v >> 1) & 0x07);  // G3G2G1 -> bits2-0
+	uint8_t speed_data_uint8_ts[] = {0x40};
+	speed_data_uint8_ts[0] |= dir | shuffled;
 
     DCCPacket p(address);
     p.addData(speed_data_uint8_ts,1);
@@ -294,23 +325,14 @@ bool DCCPacketScheduler::setSpeed28(uint16_t address, uint8_t speed)
   if ((LokDataUpdate[slot].adr >> 14) != DCC28)	//2=>28steps, write into register
 	LokDataUpdate[slot].adr = (LokDataUpdate[slot].adr & 0x3FFF) | (DCC28 << 14);
 
-  uint8_t speed_data_uint8_ts[] = {0x40};	//Speed indecator
-  /*
-  if(speed == 1) //estop!
-    //return eStop(address);//
-	speed_data_uint8_ts[0] |= 0x01; //estop
-  else if (speed == 0) //regular stop!
-    speed_data_uint8_ts[0] |= 0x00; //stop
-  else //movement
-  {
-    speed_data_uint8_ts[0] |= map(speed, 2, 127, 2, 0x1F); //convert from [2-127] to [2-31]
-    //most least significant bit has to be shufled around
-    speed_data_uint8_ts[0] = (speed_data_uint8_ts[0]&0xE0) | ((speed_data_uint8_ts[0]&0x1F) >> 1) | ((speed_data_uint8_ts[0]&0x01) << 4);
-  }
-  speed_data_uint8_ts[0] |= (0x20 * bitRead(speed, 7)); //flip bit 3 to indicate direction;
-  */
-  speed_data_uint8_ts[0] |= speed & 0x1F;			//5 Bit Speed
-  speed_data_uint8_ts[0] |= (speed & 0x80) >> 2;	//Dir
+  // DCC 28-stap G-GGGG shuffle: bit4=G0(LSB), bits3-0=G4G3G2G1
+  // Input: bit7=richting, bits4-0=logische stap 0..31
+  uint8_t v28  = speed & 0x1F;
+  uint8_t dir28 = (speed & 0x80) ? 0x20 : 0x00;
+  uint8_t shuffled28 = ((v28 & 0x01) << 4)   // G0 -> bit4
+                     | ((v28 >> 1) & 0x0F);  // G4G3G2G1 -> bits3-0
+  uint8_t speed_data_uint8_ts[] = {0x40};
+  speed_data_uint8_ts[0] |= dir28 | shuffled28;
 
   DCCPacket p(address);
   p.addData(speed_data_uint8_ts,1);
@@ -750,48 +772,22 @@ bool DCCPacketScheduler::setBasicAccessoryPos(uint16_t address, bool state)
 //send an accessory message
 bool DCCPacketScheduler::setBasicAccessoryPos(uint16_t address, bool state, bool activ)
 {
-	/*
-	Accessory decoder packet format:
-	================================
-	1111..11 0 1000-0001 0 1111-1011 0 EEEE-EEEE 1
-      Preamble | 10AA-AAAA | 1aaa-CDDX | Err.Det.B
+    // address = outputAddress (client adres, 1-gebaseerd, 1..2048)
+    // Alle adresconversie (lineair/niet-lineair) gebeurt in DCCPacket::getBitstream()
+    if (address == 0 || address > 0x800)
+        return false;
 
-      aaaAAAAAA -> 111000001 -> Acc. decoder number 1
+    DCCPacket p(address);  // outputAddress direct doorgeven aan getBitstream
+    uint8_t data[1];
+    data[0] = 0;
+    if (state) bitWrite(data[0], 0, 1);   // R: richting/positie
+    if (activ) bitWrite(data[0], 3, 1);   // D: activeer
 
-	  UINT16 FAdr = (FAdr_MSB << 8) + FAdr_LSB;
-	  UINT16 Dcc_Addr = FAdr >> 2	//aaaAAAAAA
+    p.addData(data, 1);
+    p.setKind(basic_accessory_packet_kind);
+    p.setRepeat(OTHER_REPEAT);
 
-	  Beispiel:
-	  FAdr=0 ergibt DCC-Addr=0 Port=0;
-	  FAdr=3 ergibt DCC-Addr=0 Port=3;
-	  FAdr=4 ergibt DCC-Addr=1 Port=0; usw
-
-      C on/off:    1 => on		// Ausgang aktivieren oder deaktivieren
-      DD turnout: 01 => 2		// FAdr & 0x03  // Port
-      X str/div:   1 => set to diverging  // Weiche nach links oder nach rechts
-		=> X=0 soll dabei Weiche auf Abzweig bzw. Signal auf Halt kennzeichnen.
-
-     => COMMAND: SET TURNOUT NUMBER 2 DIVERGING
-
-	 1111..11 0 1000-0001 0 1111-0011 0 EEEE-EEEE 1
-	 => COMMAND: SET TURNOUT NUMBER 6 DIVERGING
-	*/
-	if (address > 0x7FF)	//check if Adr is ok, (max. 11-bit for Basic Adr)
-		return false;
-
-	DCCPacket p((address + TrntFormat) >> 2); //9-bit Address + Change Format Roco / Intellibox
-	uint8_t data[1];
-	data[0] = ((address + TrntFormat) & 0x03) << 1;	//0000-CDDX -> set DD
-	if (state == true)	//SET X Weiche nach links oder nach rechts
-		bitWrite(data[0], 0, 1);	//set turn
-	if (activ == true )	//SET C Ausgang aktivieren oder deaktivieren
-		bitWrite(data[0], 3, 1);	//set ON
-
-	p.addData(data, 1);
-	p.setKind(basic_accessory_packet_kind);
-	p.setRepeat(OTHER_REPEAT);
-
-	if (notifyTrnt)
+    if (notifyTrnt)
 		notifyTrnt(address, state, activ);
 
 	bitWrite(BasicAccessory[address / 8], address % 8, state);	//pro SLOT immer 8 Zust�nde speichern!
@@ -820,13 +816,15 @@ bool DCCPacketScheduler::setExtAccessoryPos(uint16_t address, uint8_t state)
 	1111..11 0 1000-0001 0 0111-1011 0 xxxx-xxxx 0 EEEE-EEEE 1
       Preamble | 10AA-AAAA | 0aaa-0AA1 | DDDD-DDDD | Err.Det.B
   	*/
-	if (address > 0x7FF)	//check if Adr is ok, (max. 11-bit for Basic Adr)
+	if (address == 0 || address > 0x800)
 		return false;
 
-	DCCPacket p((address + TrntFormat) >> 2); //9-bit Address + Change Format Roco / Intellibox
+	// address = outputAddress (client adres, one-based)
+	// Address conversion is in DCCPacket::getBitstream()
+	DCCPacket p(address);
 	uint8_t data[2];
-	data[0] = (((address + TrntFormat) & 0x03) << 1 | 0x01);	//0000-0AA1
-	data[1] = state;		//DDDD-DDDD
+	data[0] = 0x01;		// bit0=1 requires extended format (0000-0AA1, AA via getBitstream)
+	data[1] = state;	// DDDD-DDDD
 
 	p.addData(data, 2);
 	p.setKind(extended_accessory_packet_kind);

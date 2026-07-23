@@ -1,4 +1,4 @@
-# Work in Progress
+# TMC DCC Library
 
 ## Overview
 
@@ -43,7 +43,7 @@ In **HQ mode**, the library generates only two output signals: a DCC signal and 
 
 ## Signal Generation and Timing Accuracy
 
-The way DCC signals are generated depends on the selected operating mode and and driver (processor), and has a direct impact on timing accuracy and signal jitter.
+The way DCC signals are generated depends on the selected operating mode and driver (processor), and has a direct impact on timing accuracy and signal jitter.
 
 In **Z21pg mode**, for most drivers the three output signals are generated in software using a timer-driven interrupt service routine (bit-banging). The main advantage of this approach is portability: the signal generation logic is largely processor-agnostic, making it relatively easy to adapt the library to new microcontroller platforms. The downside is that, depending on the chosen processor, timing jitter may be present in the generated DCC signal. This effect is noticeable on platforms such as the ESP32 and classic Arduino boards like the UNO and MEGA, where interrupt latency and background system activity can influence timing precision.
 
@@ -67,7 +67,7 @@ For **HQ mode**, the library supports the following processors:
 - **ESP32** (all variants), using the RMT for signal generation. See [ESP32 and DCC](extras/variants-HQ/ESP32/RMT.md) for details.
 - **RP2040/2350**, using the PIO for signal generation. See [RP2040 and DCC](extras/variants-HQ/RP2040/RP2040.md) for details.
 
-For new designs, **HQ mode** drivers are recommended, due to **superior DCC signal generation**. This is particularly true for the Raspberry RP2040/2350 processors, followed by STM32, DxCore and (due to inter-packet jitter) ESP32. See [suitability of various processors for DCC generation](extras/variants-HQ/HQ-mode-comparison/comparison.md) for a comparison.
+For new designs, **HQ mode** drivers are recommended, due to **superior DCC signal generation**. This is particularly true for the Raspberry Pi RP2040/2350 processors, followed by STM32, DxCore and (due to inter-packet jitter) ESP32. See [suitability of various processors for DCC generation](extras/variants-HQ/HQ-mode-comparison/comparison.md) for a comparison.
 
 ---
 

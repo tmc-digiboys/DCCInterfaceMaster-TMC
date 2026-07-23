@@ -49,12 +49,13 @@ class DCCPacket
   private:
    //A DCC packet is at most 6 uint8_ts: 2 of address, three of data, one of XOR
     uint16_t address;
-    //uint8_t address_kind;
     uint8_t data[3];
-    uint8_t size_repeat;  //a bit field! 0b11000000 = 0xC0 = size; 0x00111111 = 0x3F = repeat
+    uint8_t size_repeat;
     uint8_t kind;
 
   public:
+    static bool     nonLinearAddressing;  // false=lineair (default), true=non-lineair (Lenz)
+    static uint16_t trntFormat;           // offset: ROCO=3, IB=7, LENZ=3
     DCCPacket(uint16_t decoder_address=0xFF /*, uint8_t decoder_address_kind=0x00*/);
 
     uint8_t getBitstream(volatile uint8_t rawuint8_ts[]); //returns size of array.
