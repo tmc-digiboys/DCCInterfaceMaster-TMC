@@ -153,17 +153,32 @@ bool DCCPacketScheduler::isInServiceMode(void) const {
 }
 
 void DCCPacketScheduler::setAckReceived(void) {
-    // External module signals a valid ACK — set status immediately SUCCESS
-    if (current_ack_status == WAIT_FOR_ACK || current_ack_status == ACK_DETECTED) {
-        current_ack_status = ACK_READ_SUCCESS;
-    }
+    // Externe module meldt een geldige ACK — zet status direct op SUCCESS.
+    //
+    // No precondition on the prior current_ack_status value. This
+    // method exists specifically so an external module can report a
+    // detected ACK to the scheduler — the caller (e.g. a per-bridge
+    // current-sense implementation) is expected to have already done
+    // its own validation (threshold, duration) before calling this.
+    // The previous precondition (current_ack_status must already be
+    // WAIT_FOR_ACK or ACK_DETECTED) assumed the library's own internal
+    // ACK polling (inside update()'s "if (notifyCurrentSense) {...}"
+    // block) is what drives those states first. But notifyCurrentSense
+    // is a weak-linked, OPTIONAL callback — if a project leaves it
+    // unimplemented (e.g. because that internal, single-threshold,
+    // single-pin detection doesn't suit multi-bridge hardware, or is
+    // simply unreliable on a given board), current_ack_status then
+    // NEVER enters WAIT_FOR_ACK/ACK_DETECTED on its own, making
+    // setAckReceived() a permanent no-op in exactly the configuration
+    // it exists to support: external-only ACK reporting.
+    current_ack_status = ACK_READ_SUCCESS;
 }
 
 void DCCPacketScheduler::loadEEPROMconfig(void)
 {
-  // If an external configuration has been provided, use that instead of EEPROM
+  // Als externe configuratie beschikbaar is, gebruik die i.p.v. EEPROM
   if (_hasExtCfg) {
-    uint8_t railcom     = (_extCfg.railcom       >= 0) ? (uint8_t)_extCfg.railcom      : 0x01;
+    uint8_t railcom     = (_extCfg.railcom      >= 0) ? (uint8_t)_extCfg.railcom      : 0x01;
     uint8_t progRdMode  = (_extCfg.progReadMode  >= 0) ? (uint8_t)_extCfg.progReadMode  : 0x03;
     uint8_t progRep     = (_extCfg.progRepeat    >= 7) ? (uint8_t)_extCfg.progRepeat    : OPS_MODE_PROGRAMMING_REPEAT;
     uint8_t rstSRep     = (_extCfg.rstSRepeat    >= 0) ? (uint8_t)_extCfg.rstSRepeat    : RESET_START_REPEAT;
@@ -177,7 +192,7 @@ void DCCPacketScheduler::loadEEPROMconfig(void)
     return;
   }
 
-  // Fallback: original EEPROM reading
+  // Fallback: origineel EEPROM gedrag
   #if defined(ARDUINO_ARCH_RP2040)
     EEPROM.begin(256);                         // EEPROM size
   #endif
@@ -220,6 +235,7 @@ void DCCPacketScheduler::setpower(uint8_t state, bool notify)
 		else {
 			//generate RailPower-Signal
       dccPacketEngine.RunOutputSignal();
+            Serial2.printf("poweron");
 		}
 		if (notifyRailpower && notify)
 			notifyRailpower(railpower);
@@ -819,11 +835,11 @@ bool DCCPacketScheduler::setExtAccessoryPos(uint16_t address, uint8_t state)
 	if (address == 0 || address > 0x800)
 		return false;
 
-	// address = outputAddress (client adres, one-based)
-	// Address conversion is in DCCPacket::getBitstream()
+	// address = outputAddress (client adres, 1-gebaseerd)
+	// Adresconversie gebeurt in DCCPacket::getBitstream()
 	DCCPacket p(address);
 	uint8_t data[2];
-	data[0] = 0x01;		// bit0=1 requires extended format (0000-0AA1, AA via getBitstream)
+	data[0] = 0x01;		// bit0=1 vereist voor extended format (0000-0AA1, AA via getBitstream)
 	data[1] = state;	// DDDD-DDDD
 
 	p.addData(data, 2);
@@ -843,8 +859,8 @@ bool DCCPacketScheduler::setExtAccessoryPos(uint16_t address, uint8_t state)
 //write CV byte value
 bool DCCPacketScheduler::opsProgDirectCV(uint16_t CV, uint8_t CV_data)
 {
-	//check if CV# is between 0 - 1023
-	if (CV > 1023) {
+	//check if CV# (user-facing, NMRA 1-1024) is valid
+	if (CV < 1 || CV > 1024) {
 		if (notifyCVNack)
 			notifyCVNack(CV);
 		return false;
@@ -856,6 +872,14 @@ bool DCCPacketScheduler::opsProgDirectCV(uint16_t CV, uint8_t CV_data)
 
 	ProgState = ProgStart;
 	ProgMode = ProgModeWriteByte;
+	// current_cv stays the user-facing/1-indexed CV number throughout
+	// the state machine (bit tracking, notifyCVVerify() reporting,
+	// etc.) — the NMRA wire-format (CV-1) adjustment is applied only at
+	// the point a packet is actually built (opsWriteCV()/opsVerifyCV()/
+	// the bit-mode packet builder), not here. See those functions'
+	// comments for the full reasoning (a logic-analyzer-confirmed
+	// off-by-one: writing "CV29" was producing a packet addressing
+	// CV30, because the adjustment was previously missing entirely).
 	current_cv = CV;
 	current_cv_value = CV_data;
 	return true;
@@ -869,9 +893,16 @@ void DCCPacketScheduler::opsWriteCV(uint16_t CV, uint8_t CV_data)
 	//CC=10 Bit Manipulation
 	//CC=01 Verify byte
 	//CC=11 Write byte 	<--
-	DCCPacket p(((CV >> 8) & 0b11) | 0b01111100);
+	// CV passed in here is the user-facing/1-indexed CV number (see
+	// opsProgDirectCV()'s comment) — subtract 1 here, at the point the
+	// packet's address field is actually built, per the comment two
+	// lines up ("for CV#1 is the Adress 0"). Previously missing
+	// entirely, confirmed on a logic analyzer as an off-by-one:
+	// writing "CV29" produced a packet physically addressing CV30.
+	uint16_t wireCV = CV - 1;
+	DCCPacket p(((wireCV >> 8) & 0b11) | 0b01111100);
 	uint8_t data[] = { 0x00 , 0x00};
-	data[0] = CV & 0xFF;
+	data[0] = wireCV & 0xFF;
 	data[1] = CV_data;
 	p.addData(data, 2);
 	p.setKind(ops_mode_programming_kind);	//always use short Adress Mode!
@@ -884,8 +915,8 @@ void DCCPacketScheduler::opsWriteCV(uint16_t CV, uint8_t CV_data)
 //verify CV value extern Function:
 bool DCCPacketScheduler::opsVerifyDirectCV(uint16_t CV, uint8_t CV_data)
 {
-	//check if CV# is between 0 - 1023
-	if (CV > 1023) {
+	//check if CV# (user-facing, NMRA 1-1024) is valid
+	if (CV < 1 || CV > 1024) {
 		if (notifyCVNack)
 			notifyCVNack(CV);
 		return false;
@@ -897,6 +928,8 @@ bool DCCPacketScheduler::opsVerifyDirectCV(uint16_t CV, uint8_t CV_data)
 
 	ProgState = ProgStart;
 	ProgMode = ProgModeByteVerify;
+	// current_cv stays user-facing here too — see opsProgDirectCV()'s
+	// comment.
 	current_cv = CV;
 	current_cv_value = CV_data;
 	return true;
@@ -910,9 +943,12 @@ void DCCPacketScheduler::opsVerifyCV(uint16_t CV, uint8_t CV_data)
 	//CC=10 Bit Manipulation
 	//CC=01 Verify byte		<--
 	//CC=11 Write byte
-	DCCPacket p(((CV >> 8) & 0b11) | 0b01110100);
+	// See opsWriteCV()'s comment — same NMRA wire-format (CV-1)
+	// adjustment, applied here at the point this packet is built.
+	uint16_t wireCV = CV - 1;
+	DCCPacket p(((wireCV >> 8) & 0b11) | 0b01110100);
 	uint8_t data[2];
-	data[0]	= CV & 0xFF;
+	data[0]	= wireCV & 0xFF;
 	data[1] = CV_data;
 	p.addData(data, 2);
 	p.setKind(ops_mode_programming_kind);	//always use short Adress Mode!
@@ -926,8 +962,8 @@ void DCCPacketScheduler::opsVerifyCV(uint16_t CV, uint8_t CV_data)
 //read a CV in bit-Mode
 bool DCCPacketScheduler::opsReadDirectCV(uint16_t CV)
 {
-	//check if CV# is between 0 - 1023
-	if (CV > 1023) {
+	//check if CV# (user-facing, NMRA 1-1024) is valid
+	if (CV < 1 || CV > 1024) {
 		if (notifyCVNack)
 			notifyCVNack(CV);
 		return false;
@@ -940,6 +976,8 @@ bool DCCPacketScheduler::opsReadDirectCV(uint16_t CV)
 	if (ProgReadMode == 2)
 		ProgMode = ProgModeByte;
 	else ProgMode = ProgModeBit;
+	// current_cv stays user-facing here too — see opsProgDirectCV()'s
+	// comment.
 	current_cv = CV;
 	return true;
 }
@@ -955,9 +993,12 @@ void DCCPacketScheduler::opsReadCV(uint16_t CV, uint8_t bitToRead, bool bitState
 	//BBB represents the bit position
 	//D contains the value of the bit to be verified or written
 	//K=1 signifies a "Write Bit" operation and K=0 signifies a "Bit Verify"
-	DCCPacket p(((CV >> 8) & 0b11) | 0b01111000);
+	// See opsWriteCV()'s comment — same NMRA wire-format (CV-1)
+	// adjustment, applied here at the point this packet is built.
+	uint16_t wireCV = CV - 1;
+	DCCPacket p(((wireCV >> 8) & 0b11) | 0b01111000);
 	uint8_t data[] = { 0x00 , 0x00};
-	data[0] = CV & 0xFF;
+	data[0] = wireCV & 0xFF;
 	data[1] = 0b11100000 | (bitToRead & 0x07) | (bitState << 3);	//verify Bit is "bitSet"? ("1" or "0")
 	p.addData(data, 2);
 	p.setKind(ops_mode_programming_kind);	//always use short Adress Mode!
@@ -983,12 +1024,18 @@ bool DCCPacketScheduler::opsProgramCV(uint16_t address, uint16_t CV, uint8_t CV_
 	DCCPacket p(address);
 
 	// split the CV address up among data uint8_ts 0 and 1
+	// CV passed in here is the user-facing/1-indexed CV number — the
+	// NMRA wire format needs CV-1 (CV#1 -> address field 0), same as
+	// opsWriteCV()'s direct-mode packet — previously missing here too,
+	// meaning POM writes had the exact same off-by-one as direct-mode
+	// service-mode writes.
+	uint16_t wireCV = CV - 1;
 
   // Changed, to avoid compiler warnings
 	//uint8_t data[] = { ((CV >> 8) & 0b11) | 0b11101100, CV & 0xFF, CV_data };
   uint8_t data[] = {
-    static_cast<uint8_t>(((CV >> 8) & 0b11) | 0b11101100),
-    static_cast<uint8_t>(CV & 0xFF),
+    static_cast<uint8_t>(((wireCV >> 8) & 0b11) | 0b11101100),
+    static_cast<uint8_t>(wireCV & 0xFF),
     static_cast<uint8_t>(CV_data)
   };
 
@@ -1016,11 +1063,15 @@ bool DCCPacketScheduler::opsPOMwriteBit(uint16_t address, uint16_t CV, uint8_t B
 
 	DCCPacket p(address);
 	// split the CV address up among data uint8_ts 0 and 1
+	// CV passed in here is the user-facing/1-indexed CV number — apply
+	// the same NMRA wire-format (CV-1) adjustment as the other POM
+	// functions above.
+	uint16_t wireCV = CV - 1;
   // Modified, to avoid compiler warnings
 	//uint8_t data[] = { ((CV >> 8) & 0b11) | 0b11101000, CV & 0xFF, Bit_data & 0x0F};
   uint8_t data[] = {
-    static_cast<uint8_t>(((CV >> 8) & 0b11) | 0b11101000),
-    static_cast<uint8_t>(CV & 0xFF),
+    static_cast<uint8_t>(((wireCV >> 8) & 0b11) | 0b11101000),
+    static_cast<uint8_t>(wireCV & 0xFF),
     static_cast<uint8_t>(Bit_data & 0x0F)
   };
 
@@ -1047,11 +1098,18 @@ bool DCCPacketScheduler::opsPOMreadCV(uint16_t address, uint16_t CV)
 
 	DCCPacket p(address);
 	// split the CV address up among data uint8_ts 0 and 1
+	// CV passed in here is the user-facing/1-indexed CV number — apply
+	// the same NMRA wire-format (CV-1) adjustment as opsProgramCV().
+	// POMCVAdr below deliberately keeps the ORIGINAL, user-facing CV
+	// (it's used for reporting the result back via
+	// notifyCVPOMRead()/GLOBALRAILCOMREADER, not for building the
+	// packet itself).
+	uint16_t wireCV = CV - 1;
   // Modified, to avoid compiler warnings
 	// uint8_t data[] = { ((CV >> 8) & 0b11) | 0b11100100, CV & 0xFF, 0x00 };
   uint8_t data[] = {
-    static_cast<uint8_t>(((CV >> 8) & 0b11) | 0b11100100),
-    static_cast<uint8_t>(CV & 0xFF),
+    static_cast<uint8_t>(((wireCV >> 8) & 0b11) | 0b11100100),
+    static_cast<uint8_t>(wireCV & 0xFF),
     static_cast<uint8_t>(0x00)
   };
 

@@ -112,7 +112,11 @@
 #define DEBUG3     (sio_hw->gpio_togl = 1u << PIN_TEST3)
 */
 
-
+#if defined(ARDUINO_OLIMEX_PICO2XL)
+ #define HW_PIO_BASE	16
+#else
+ #define HW_PIO_BASE	0
+ #endif
 //================================================================================================
 //                                      Defines
 //================================================================================================
@@ -135,9 +139,9 @@
 // A.1. Constructor definition and instantiation
 //************************************************************************************************
 DccPacketEngine::DccPacketEngine(){
-  dccRailPin = 2;                                 // Pin for DCC rail Signal, with RailCom support
-  dccRailAuxPin = 3;                              // Pin for Enable and RailCom gap (optional)
-  dccMonitorPin = 4;                           // Not use in this HQ variant
+  dccRailPin = 32;                                 // Pin for DCC rail Signal, with RailCom support
+  dccRailAuxPin = 33;                              // Pin for Enable and RailCom gap (optional)
+  dccMonitorPin = 44;                           // Not use in this HQ variant
 }
 
 // dccPacketEngine is the object that controls packet transmission for different hardware
@@ -461,6 +465,7 @@ static void PioSmDccInit(PIO pio, uint sm, uint offset, uint pin) {
   // Step 2: Configure the GPIO pins so they are controlled by the PIO instead of the SIO
   // Since we use multiple pins, pio_gpio_init should be called once per pin.
   // Note that we MUST use consecutive GPIO pins (e.g. 2, 3, 4)
+  
   pio_gpio_init(pio, pin);
   pio_gpio_init(pio, pin+1);
   // Step 3: Configure the pins. The parameter "2" represents the number of pins
@@ -503,9 +508,12 @@ static void addThirdPioPin(uint pin) {
 static void setupPio() {
   // Step 1: Select which PIO we will use. The RP2040 has pio0 and pio1, RP2350 has also pio2
   pioTx.pio = PIO_USED;
+  // set bas of pio before programn is loaded
+  pio_set_gpio_base(pioTx.pio, HW_PIO_BASE);
   // Step 2: On this PIO, ask which of the four state machines are available (0..3)
   // The parameter "true" says that this state machine will also be assigned
   pioTx.smDcc = pio_claim_unused_sm(pioTx.pio, true);
+  
   // Step 3: Load the PIO code of the state machine into this PIO's instruction memory
   // The start address is returned as parameter and assigned to "offset"
   uint dccOffset = pio_add_program(pioTx.pio, &dccPulseGenerator_program);
@@ -695,6 +703,7 @@ void DccPacketEngine::StopOutputSignal() {
 
 void DccPacketEngine::RunOutputSignal() {
   if (dccTx.dccOutputActive) return;
+  Serial2.printf("dcc-on");
   dccTx.dccOutputActive = true;                         // Flag StopOutputSignal
   createDccDefaultPackets();                            // Bit masks must be renewed
 }

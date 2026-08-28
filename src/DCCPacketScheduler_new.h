@@ -181,8 +181,9 @@
 #define SERVICE 0x08	//system is in CV programming mode
 
 //Trnt message paket format (inc)
-#define ROCO 0
-#define IB 4
+#define ROCO     3     // lineair, offset +3: client addr 1 -> lineair DCC adres 4
+#define IB       7     // lineair, offset +7: IB heeft extra +4 tov ROCO  
+#define LENZ   255     // non-lineair: zelfde offset als ROCO maar andere getBitstream codering
 
 //DCC Speed Steps
 #define DCC14	0x01
@@ -238,6 +239,19 @@ class DCCPacketScheduler
 	void disable_additional_DCC_output(void);
 
 	void loadEEPROMconfig(void);	//Load Configuration from EEPROM
+	bool isInServiceMode(void) const;	//true als service mode pakketten worden herhaald
+	void setAckReceived(void);	//externe module meldt een geldige ACK
+
+	// Externe configuratie injecteren (vervangt EEPROM lezen)
+	// Aanroepen VOOR setup() om scheduler EEPROM te omzeilen
+	struct ExternalConfig {
+		int8_t  railcom     = -1;  // -1 = gebruik EEPROM default
+		int16_t progRepeat  = -1;  // -1 = gebruik EEPROM default
+		int16_t rstSRepeat  = -1;  // -1 = gebruik EEPROM default
+		int16_t rstCRepeat  = -1;  // -1 = gebruik EEPROM default
+		int8_t  progReadMode= -1;  // -1 = gebruik EEPROM default
+	};
+	void setExternalConfig(const ExternalConfig& cfg) { _extCfg = cfg; _hasExtCfg = true; }
 
 	//more specific functions:
 	void setpower(uint8_t state, bool notify = false);		//set Mode of output aktive/inactive - should notify other clients?
@@ -329,6 +343,8 @@ class DCCPacketScheduler
 	byte ProgReadMode;	//lese-Modus f�r Direct CV
 	byte RSTsRepeat;	//Repeat for Reset start Packet
 	byte RSTcRepeat;	//Repeat for Reset contingue Packet
+	ExternalConfig _extCfg;
+	bool _hasExtCfg = false;
 
 	void opsWriteCV(uint16_t CV, uint8_t CV_data);		//Direct CV write
 	void opsVerifyCV(uint16_t CV, uint8_t CV_data);		//Direct CV pr�fen
