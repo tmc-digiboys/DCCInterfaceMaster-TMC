@@ -235,7 +235,7 @@ void DCCPacketScheduler::setpower(uint8_t state, bool notify)
 		else {
 			//generate RailPower-Signal
       dccPacketEngine.RunOutputSignal();
-           
+            Serial2.printf("poweron");
 		}
 		// ESTOP is deliberately excluded from the notifyRailpower()
 		// callback: per its own #define above ("no Loco drive but

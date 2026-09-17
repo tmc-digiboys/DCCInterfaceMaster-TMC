@@ -1,5 +1,5 @@
 /*
- * DCC Waveform Generator v6.1.0
+ * DCC Waveform Generator v6.2.0
  *
  * Author: Philipp Gahtow digitalmoba@arcor.de
  *		   Don Goodman-Wilson dgoodman@artificial-science.org
@@ -81,7 +81,8 @@
  * - add function setExtAccessoryPos
  * - add timing to ACK detection
  * - change code to work with new DCCHardware.h class interface
- * - add accessory and slot settings for STM32 and DxCore. #def.ines rewritten
+ * - add accessory and slot settings for STM32 and DxCore. #defines rewritten
+ * - added setExternalConfig to prevent setup() from calling EEPROM
  */
 
 #ifndef __DCCCOMMANDSTATION_H__
@@ -182,7 +183,7 @@
 
 //Trnt message paket format (inc)
 #define ROCO     3     // lineair, offset +3: client addr 1 -> lineair DCC adres 4
-#define IB       7     // lineair, offset +7: IB heeft extra +4 tov ROCO  
+#define IB       7     // lineair, offset +7: IB heeft extra +4 tov ROCO
 #define LENZ   255     // non-lineair: zelfde offset als ROCO maar andere getBitstream codering
 
 //DCC Speed Steps
@@ -242,14 +243,16 @@ class DCCPacketScheduler
 	bool isInServiceMode(void) const;	//true als service mode pakketten worden herhaald
 	void setAckReceived(void);	//externe module meldt een geldige ACK
 
-	// Externe configuratie injecteren (vervangt EEPROM lezen)
-	// Aanroepen VOOR setup() om scheduler EEPROM te omzeilen
+	// Some processors do not have an internal EEPROM. Therefore the code has
+  // added an option that allows the user to provide configuration parameters
+  // in advance. In that case "setExternalConfig" must be called before setup(),
+  // so setup() knows it should not try to read from EEPROM itself.
 	struct ExternalConfig {
-		int8_t  railcom     = -1;  // -1 = gebruik EEPROM default
-		int16_t progRepeat  = -1;  // -1 = gebruik EEPROM default
-		int16_t rstSRepeat  = -1;  // -1 = gebruik EEPROM default
-		int16_t rstCRepeat  = -1;  // -1 = gebruik EEPROM default
-		int8_t  progReadMode= -1;  // -1 = gebruik EEPROM default
+		int8_t  railcom     = -1;  // -1 = use EEPROM default
+		int16_t progRepeat  = -1;  // -1 = use EEPROM default
+		int16_t rstSRepeat  = -1;  // -1 = use EEPROM default
+		int16_t rstCRepeat  = -1;  // -1 = use EEPROM default
+		int8_t  progReadMode= -1;  // -1 = use EEPROM default
 	};
 	void setExternalConfig(const ExternalConfig& cfg) { _extCfg = cfg; _hasExtCfg = true; }
 

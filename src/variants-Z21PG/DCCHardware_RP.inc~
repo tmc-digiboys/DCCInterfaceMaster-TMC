@@ -703,6 +703,7 @@ void DccPacketEngine::StopOutputSignal() {
 
 void DccPacketEngine::RunOutputSignal() {
   if (dccTx.dccOutputActive) return;
+  Serial2.printf("dcc-on");
   dccTx.dccOutputActive = true;                         // Flag StopOutputSignal
   createDccDefaultPackets();                            // Bit masks must be renewed
 }
