@@ -27,7 +27,7 @@ More recently, **Aiko Pras** and **Rob van Hoeijen** restructured the library to
 
 ## Generated Signals and Operating Modes
 
-The library can be used in two different operating modes: **Z21pg mode** (default) and **HQ mode**. In **Z21pg mode** mode the library is designed for compatibility with existing **Z21PG** software, which means that the H-bridge is driven with complementary DCC signals (IN1 = DCC, IN2 = inverted DCC). In **HQ mode** the H-bridge is driven by a single PWM signal, gated by an enable signal.
+The library can be used in three different operating modes: **Z21pg mode**, **HQ mode** and **TMC mode** (default). In **Z21pg mode** mode the library is designed for compatibility with existing **Z21PG** software, which means that the H-bridge is driven with complementary DCC signals (IN1 = DCC, IN2 = inverted DCC). In **HQ mode** the H-bridge is driven by a single PWM signal, gated by an enable signal. **TMC mode** is a further development of the Z21pg RP2040/RP2350 driver, and uses the same complementary signals.
 
 In **Z21pg mode**, the library outputs up to three signals on dedicated processor pins. These consist of a DCC rail signal, an inverted DCC rail signal, and an optional monitor signal. Both DCC rail signals can optionally include a RailCom cutout (gap), allowing RailCom feedback to be supported directly. In addition, both rail signals can be disabled using a power-down command, for example in response to a short circuit or an explicit user request.
 
@@ -38,6 +38,14 @@ The optional **monitor signal** always carries a continuous DCC signal. It never
 In **HQ mode**, the library generates only two output signals: a DCC signal and a separate signal carrying the RailCom cutout (a third monitor signal is not available). The RailCom cutout signal will be disabled after a power-down command. Next to the DCC and RailCom cutout signals, additional signals may be needed to operate a H-bridge; these additional signals are not part of this library. Depending on the type of H-bridge used, external logic may be required to combine these signals into a proper rail output. An example HQ output is shown in the figure below; details can be found [here](extras/variants-HQ/HQ-mode-details//readme.md).
 
 [![DCC signals in HQ mode](extras/Figures/ESP32-With-RailCom.png)](extras/Figures/ESP32-With-RailCom.png)
+
+In **TMC mode** the signals are identical to those of **Z21pg mode**: a DCC rail signal, an inverted DCC rail signal and an optional monitor signal. This mode is only available for the **RP2040/RP2350**, and started as a copy of the Z21pg RP driver. It adds inrush current protection for DRV887x H-bridges, support for the upper GPIO pins of the RP2350B, and the Pico SDK version 2 API. The monitor signal is no longer used on new boards and is disabled by default.
+
+**TMC mode** is written for the command station software and hardware of the TMC-LZ210 project:
+- https://github.com/tmc-digiboys/TMC-LZ210-Command-Station/
+- https://github.com/tmc-digiboys/TMC-LZ210-Command-Station-PCB/
+
+New developments will concentrate on this variant.
 
 ---
 
@@ -66,6 +74,8 @@ For **HQ mode**, the library supports the following processors:
 - **STM32** (STM32F4xx, STM32H7xx), using Timer3 for signal generation. See [STM32 and DCC ](extras/variants-HQ/STM32/STM32.md) for details.
 - **ESP32** (all variants), using the RMT for signal generation. See [ESP32 and DCC](extras/variants-HQ/ESP32/RMT.md) for details.
 - **RP2040/2350**, using the PIO for signal generation. See [RP2040 and DCC](extras/variants-HQ/RP2040/RP2040.md) for details.
+
+**TMC mode** supports the **RP2040/RP2350** only.
 
 For new designs, **HQ mode** drivers are recommended, due to **superior DCC signal generation**. This is particularly true for the Raspberry Pi RP2040/2350 processors, followed by STM32, DxCore and (due to inter-packet jitter) ESP32. See [suitability of various processors for DCC generation](extras/variants-HQ/HQ-mode-comparison/comparison.md) for a comparison.
 

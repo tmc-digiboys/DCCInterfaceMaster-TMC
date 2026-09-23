@@ -1,14 +1,27 @@
 //************************************************************************************************
 //
-// File:            DCCHardware_RP - Z21PG variant
+// File:            DCCHardware_RP.inc - Z21PG variant
 // Purpose:         DCC Waveform Generator for RP2040 (Raspberry Pi Pico) using PIO + DMA
 // Copyright 2026:  Aiko Pras
 // History:         2026-03-30 / Aiko Pras
+//                  2026-09-23 (AP) - Adjusted for Pico SDK version 2 and higher
 //
 // Resources:
 // - Pins: Two or three GPIO pins that can be controlled by a PIO state machine
-// - PIO: one PIO block with two state machines (one for DCC, one for AUX)
+// - PIO: one PIO block with one state machine
 // - DMA: one DMA channel to feed the PIO TX FIFO
+//
+// Intended use / limitations:
+// This driver keeps the PIO at its default GPIO window, which covers GPIO 0..31.
+// It is therefore meant for the older boards, which have at most 32 usable pins.
+// Boards with more pins (such as the RP2350B, which has 48) need a PIO gpio_base
+// of 16 to reach the upper pins; see the TMC variant, which supports that.
+// For the same reason railComGap() reads the pin states with the 32 bit
+// gpio_get_all(); the TMC variant uses the 64 bit gpio_get_all64() instead.
+//
+// This code requires Pico SDK version 2 or higher: the PIO program structure in
+// DCCHardware_RP-PIO.inc initialises the pio_version field, which older SDKs do
+// not have.
 //
 // Pin usage:
 // The pins that the PIO uses for output MUST be consecutive pins.
@@ -112,11 +125,7 @@
 #define DEBUG3     (sio_hw->gpio_togl = 1u << PIN_TEST3)
 */
 
-#if defined(ARDUINO_OLIMEX_PICO2XL)
- #define HW_PIO_BASE	16
-#else
- #define HW_PIO_BASE	0
- #endif
+
 //================================================================================================
 //                                      Defines
 //================================================================================================
@@ -131,6 +140,10 @@
 #define RAILCOM_CUTOUT_LENGTH 4       // see RCN-217 (Ausgabe 24.11.2025)
 #define PIO_USED pio0                 // Which PIO will we use?
 
+// Longest possible packet: preamble + 6 bytes (start bit + 8 bits each) + end bit,
+// plus one extra symbol when a RailCom cutout is inserted
+#define MAX_PREAMBLE (MAX_SYMBOLS - (MaxDccSize * 9) - 2)   // = 72
+
 //================================================================================================
 //                            A: Objects and Internal Data Structures
 //================================================================================================
@@ -139,9 +152,9 @@
 // A.1. Constructor definition and instantiation
 //************************************************************************************************
 DccPacketEngine::DccPacketEngine(){
-  dccRailPin = 32;                                 // Pin for DCC rail Signal, with RailCom support
-  dccRailAuxPin = 33;                              // Pin for Enable and RailCom gap (optional)
-  dccMonitorPin = 44;                           // Not use in this HQ variant
+  dccRailPin = 2;                                 // Pin for DCC rail Signal, with RailCom support
+  dccRailAuxPin = 3;                              // Pin for Enable and RailCom gap (optional)
+  dccMonitorPin = 4;                           // Pin for the DCC-Monitor (optional)
 }
 
 // dccPacketEngine is the object that controls packet transmission for different hardware
@@ -245,7 +258,7 @@ static void initTxEngines() {
 // This call works for all "signal generators" (GPIO, PIO, UART, I2C,SPI etc.).
 // Note that Arduino's digitalWrite(), but also pio_gpio_init, resets the inversion logic.
 void setPinInverted(uint pin, bool inverted) {
-  if (pin > NUM_BANK0_GPIOS) return;
+  if (pin >= NUM_BANK0_GPIOS) return;
   if (inverted) gpio_set_outover(pin, GPIO_OVERRIDE_INVERT);
   else gpio_set_outover(pin, GPIO_OVERRIDE_NORMAL);
 }
@@ -465,7 +478,6 @@ static void PioSmDccInit(PIO pio, uint sm, uint offset, uint pin) {
   // Step 2: Configure the GPIO pins so they are controlled by the PIO instead of the SIO
   // Since we use multiple pins, pio_gpio_init should be called once per pin.
   // Note that we MUST use consecutive GPIO pins (e.g. 2, 3, 4)
-  
   pio_gpio_init(pio, pin);
   pio_gpio_init(pio, pin+1);
   // Step 3: Configure the pins. The parameter "2" represents the number of pins
@@ -508,12 +520,9 @@ static void addThirdPioPin(uint pin) {
 static void setupPio() {
   // Step 1: Select which PIO we will use. The RP2040 has pio0 and pio1, RP2350 has also pio2
   pioTx.pio = PIO_USED;
-  // set bas of pio before programn is loaded
-  pio_set_gpio_base(pioTx.pio, HW_PIO_BASE);
   // Step 2: On this PIO, ask which of the four state machines are available (0..3)
   // The parameter "true" says that this state machine will also be assigned
   pioTx.smDcc = pio_claim_unused_sm(pioTx.pio, true);
-  
   // Step 3: Load the PIO code of the state machine into this PIO's instruction memory
   // The start address is returned as parameter and assigned to "offset"
   uint dccOffset = pio_add_program(pioTx.pio, &dccPulseGenerator_program);
@@ -538,7 +547,7 @@ static void setupPio() {
 void DccPacketEngine::setupWaveformGenerator() {
   switch (dccTx.pinsInUse) {
     case 0:
-      if (dccRailPin <= (NUM_BANK0_GPIOS - 1)) {   // We need at least 2 pins
+      if ((dccRailPin + 1) < NUM_BANK0_GPIOS) {    // We need at least 2 pins
         // Step 1: Set default values
         initTxEngines();
         // Step2: create bit symbols and default packets
@@ -547,11 +556,12 @@ void DccPacketEngine::setupWaveformGenerator() {
         setupPio();
         setupDma();
         // Step 4: Invert the DCC signal, if needed
-        if (dccTx.dccSignalInverted) setPinInverted(dccPacketEngine.dccRailPin, true);
+        setDccSignalInverted(dccTx.dccSignalInverted);   // applies to both rail pins
         // Step 5: Initialization is done
         dccRailAuxPin = dccRailPin + 1;                // tell the user which pin is used
         dccTx.pinsInUse = 2;
-        if (dccMonitorPin <= NUM_BANK0_GPIOS) {        // Should we already configure the third pin
+        if ((dccRailPin + 2) < NUM_BANK0_GPIOS &&      // Should we already configure the third pin
+            dccMonitorPin < NUM_BANK0_GPIOS) {
           addThirdPioPin(dccPacketEngine.dccRailPin);  // Use dccRailPin as start pin
           dccMonitorPin = dccRailPin + 2;              // tell the user which pin is used
           dccTx.pinsInUse = 3;
@@ -561,7 +571,8 @@ void DccPacketEngine::setupWaveformGenerator() {
     break;
     case 2:
       // If the dccMonitorPin has "some" valid value ()
-      if (dccMonitorPin <= NUM_BANK0_GPIOS) {        // We need a third pin
+      if ((dccRailPin + 2) < NUM_BANK0_GPIOS &&      // We need a third pin
+          dccMonitorPin < NUM_BANK0_GPIOS) {
         addThirdPioPin(dccPacketEngine.dccRailPin);  // Use dccRailPin as start pin
         dccMonitorPin = dccRailPin + 2;              // tell the user which pin is used
         dccTx.pinsInUse = 3;
@@ -645,7 +656,17 @@ void DccPacketEngine::stopServiceModeRepeats(void) {
 
 
 //******************************************************************************
-// E.3. RailCom interface methods
+// E3. Inrush Protection Mode interface methods
+//******************************************************************************
+// Inrush protection is not implemented for this variant: empty stubs
+// See the TMC variant for a driver that does implement it
+void DccPacketEngine::enterInrushMode(void) {}
+void DccPacketEngine::leaveInrushMode(void) {}
+bool DccPacketEngine::isInrushModeEnabled(void) {return false;}
+
+
+//******************************************************************************
+// E.4. RailCom interface methods
 //******************************************************************************
 // Enable / disable generation of the cutout in the DCC signal on the DCC pin
 void DccPacketEngine::setRailCom(bool active) {
@@ -684,7 +705,7 @@ bool DccPacketEngine::railComGap(void) {
 
 
 //******************************************************************************
-// E4: Start / Stop interface methods
+// E5: Start / Stop interface methods
 //******************************************************************************
 // This driver enables (disables) the signal on the DCC and inverted DCC pins.
 // The Monitor pin output will never be disabled, allowing switches and other
@@ -709,7 +730,7 @@ void DccPacketEngine::RunOutputSignal() {
 
 
 //******************************************************************************
-// E5: Setters to change certain aspects of the DCC encoder
+// E6: Setters to change certain aspects of the DCC encoder
 //******************************************************************************
 void DccPacketEngine::setDccSignalInverted(bool inverted) {
   // Inverts the polarity of the DCC and inverted DCC signal. Usefull to invert
@@ -721,17 +742,18 @@ void DccPacketEngine::setDccSignalInverted(bool inverted) {
 
 void DccPacketEngine::setPreambleLength(uint8_t value) {
   // RCN-211 (23.07.2023): Eine Zentrale muss mindestens 17 Synchronbits senden
-  if (value < 17) return;
+  if (value < 17 || value > MAX_PREAMBLE) return;
   dccTx.preambleLength = value;      // Length of normal preamble
   createDccDefaultPackets();         // Reset and Idle packet must be regenerated
 }
 
 void DccPacketEngine::setPreambleLengthSM(uint8_t value) {
   // RCN-216 (24.11.2025): im Programmiermodus mindestens 20 Synchronbits
-  if (value < 20) return;
+  if (value < 20 || value > MAX_PREAMBLE) return;
   dccTx.preambleLengthSM = value;    // Length of preamble in Service Mode
   createDccDefaultPackets();         // Reset and Idle packet must be regenerated
 }
 
-void DccPacketEngine::setRailComGapInAux(bool active) {}     // Unused in this driver
-void DccPacketEngine::setAuxActiveLevel(bool activeHigh) {}  // Unused in this driver
+void DccPacketEngine::setRailComGapInAux(bool active) {(void)active;}         // Unused in this driver
+void DccPacketEngine::setAuxActiveLevel(bool activeHigh) {(void)activeHigh;}  // Unused in this driver
+void DccPacketEngine::useMonitorPinforInrush(bool value) {(void)value;}       // Unused in this driver

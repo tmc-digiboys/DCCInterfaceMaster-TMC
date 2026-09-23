@@ -343,7 +343,16 @@ void DccPacketEngine::stopServiceModeRepeats(void) {
 
 
 //******************************************************************************
-// 7. RailCom interface methods
+// 7. Inrush Protection Mode interface methods
+//******************************************************************************
+// Inrush protection is not implemented for this variant: empty stubs
+void DccPacketEngine::enterInrushMode(void) {}
+void DccPacketEngine::leaveInrushMode(void) {}
+bool DccPacketEngine::isInrushModeEnabled(void) {return false;}
+
+
+//******************************************************************************
+// 8. RailCom interface methods
 //******************************************************************************
 void DccPacketEngine::setRailCom(bool active) { // Enable / disable generation of the RailCom gap
   dccISR.railCom = active;
@@ -370,7 +379,7 @@ bool DccPacketEngine::railComGap(void) {
 
 
 //******************************************************************************
-// 9. Setters to change certain aspects of the DCC encoder
+// 10. Setters to change certain aspects of the DCC encoder
 //******************************************************************************
 void DccPacketEngine::setPreambleLength(uint8_t value) {
   // RCN-211 (23.07.2023): Eine Zentrale muss mindestens 17 Synchronbits senden
@@ -404,8 +413,11 @@ void DccPacketEngine::setRailComGapInAux(bool useForRcCutout) {
   dccISR.railComActiveOnAux = dccISR.railComAllowedOnAux;
 }
 
+// Not used by this variant
+void DccPacketEngine::useMonitorPinforInrush(bool value) {(void)value;}
+
 //******************************************************************************
-// 8. Start / Stop interface methods
+// 9. Start / Stop interface methods
 //******************************************************************************
 void DccPacketEngine::StopOutputSignal() {
   // This routine may be called when a short circuit is detected or when the user

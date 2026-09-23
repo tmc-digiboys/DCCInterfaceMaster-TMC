@@ -584,7 +584,16 @@ void DccPacketEngine::stopServiceModeRepeats(void) {
 
 
 //******************************************************************************
-// E.3. RailCom interface methods
+// E3. Inrush Protection Mode interface methods
+//******************************************************************************
+// Inrush protection is not implemented for this variant: empty stubs
+void DccPacketEngine::enterInrushMode(void) {}
+void DccPacketEngine::leaveInrushMode(void) {}
+bool DccPacketEngine::isInrushModeEnabled(void) {return false;}
+
+
+//******************************************************************************
+// E.4. RailCom interface methods
 //******************************************************************************
 // Enable / disable generation of the cutout in the DCC signal on the DCC pin
 void DccPacketEngine::setRailCom(bool active) {
@@ -625,7 +634,7 @@ bool DccPacketEngine::railComGap(void) {
 }
 
 //******************************************************************************
-// E4: Start / Stop interface methods
+// E5: Start / Stop interface methods
 //******************************************************************************
 // This HQ driver code enables (disables) the signal on the AUX pin. The pin
 // can therefore be used to enable (disable) a connected H-Bridge. The
@@ -669,7 +678,7 @@ void DccPacketEngine::RunOutputSignal() {
 }
 
 //******************************************************************************
-// E5: Setters to change certain aspects of the DCC encoder
+// E6: Setters to change certain aspects of the DCC encoder
 //******************************************************************************
 void DccPacketEngine::setDccSignalInverted(bool inverted) {
   // Inverts the polarity of the DCC signal. No impact on AUX signal
@@ -693,3 +702,6 @@ void DccPacketEngine::setPreambleLengthSM(uint8_t value) {
 void DccPacketEngine::setAuxActiveLevel(bool activeHigh) {
   setAuxPinInverted(activeHigh);
 }
+
+// Not used by this variant
+void DccPacketEngine::useMonitorPinforInrush(bool value) {(void)value;}

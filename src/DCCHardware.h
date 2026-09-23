@@ -4,6 +4,7 @@
 // purpose:   Common class file for all hardware variants
 // author:    Aiko Pras
 // version:   2026-02-01 V1.0.1 ap initial version
+//            2026-09-23 V1.1.0 ap Inrush protection added, to prevent DRV887x OCP
 //
 // history:   This is a further development of earlier DCCHardware.h files.
 //            It has been changed into a clean C++ class file and avoids the
@@ -24,14 +25,14 @@
 // -----------------------------------------------------------------------------
 //
 // The behaviour of the DCC output pins depends on whether the hardware layer is
-// operating in "Z21PG" mode or in "HQ" mode. Both modes share the same public
-// interface, but they map the abstract functions of this class to different
-// electrical behaviour on the pins.
+// operating in "Z21PG" mode, in "HQ" mode or "TMC" mode. All modes share the
+// same public interface, but they map the abstract functions of this class to
+// different electrical behaviour on the pins.
 //
 // If an invalid pin is specified, the driver will change its value to 0xFF.
 //
 // -----------------------------------------------------------------------------
-// Z21PG MODE (default and backward compatible)
+// Z21PG MODE (backward compatible)
 // -----------------------------------------------------------------------------
 //
 // Z21PG mode is fully compatible with earlier versions of this library and with
@@ -126,6 +127,12 @@ class DccPacketEngine {
     bool isServiceModeRepeating(void);            // True while the ISR is repeating the current SM packet
     void stopServiceModeRepeats(void);            // Abort SM retransmissions (e.g. after ACK)
 
+//TODO: Implement these in all variants!!
+    // Inrush protection: Methods to enter / leave
+    void enterInrushMode(void);                   // send sequence of short pulses to prevent DRV887x OCP
+    void leaveInrushMode(void);                   // Back to normal mode
+    bool isInrushModeEnabled(void);               // True while inrush mode is active
+
     // RailCom specific
     void setRailCom(bool active);                 // Enable / disable generation of the RailCom gap
     bool getRailCom(void);                        // Is generation of the RailCom gap enabled?
@@ -142,6 +149,7 @@ class DccPacketEngine {
     void setPreambleLengthSM(uint8_t value);      // Length of preamble in Service Mode (>= 20)
     void setAuxActiveLevel(bool activeHigh);      // Only HQ: the AuxPin value after RunOutputSignal()
     void setRailComGapInAux(bool useForRcCutout); // Only HQ: is the AuxPin used for the RC cutout?
+    void useMonitorPinforInrush(bool value);      // The monitor pin is also used for inrush protection
 
     DccPacketEngine();                            // Constructor declaration
 };

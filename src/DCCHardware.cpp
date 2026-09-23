@@ -1,6 +1,6 @@
 #include <Arduino.h>
 
-#define Z21PG
+#define TMC
 
 // Create a define for all DxCore variants, to improve readability
 #if defined(__AVR_DA__) || defined(__AVR_DB__) || defined(__AVR_DD__) || \
@@ -16,9 +16,18 @@
   #define ATMEGA_HAS_TIMER1
 #endif
 
+// ================= TMC =================
+#if defined(TMC)
+  #if defined(ARDUINO_ARCH_RP2040)
+    #include "variants-TMC/DCCHardware_RP.inc"
+  // Others
+  #else
+    #error No DCCHardware implementation for this processor / board (TMC mode)
+  #endif
+
 
 // ================= Z21PG =================
-#if defined(Z21PG)
+#elif defined(Z21PG)
 
   // AVR DxCore
   #if defined(AVR_DXCORE)
@@ -26,7 +35,7 @@
 
   // Traditional AVRs
   #elif defined(ATMEGA_HAS_TIMER1)
-    #include "variants-Z21PG/DCCHardware_atmega_sw_timer1.inc"
+    #include "variants-Z21PG/DCCHardware_AtMega_sw_timer1.inc"
 
   // ESP32 (all)
   #elif defined(ARDUINO_ARCH_ESP32)

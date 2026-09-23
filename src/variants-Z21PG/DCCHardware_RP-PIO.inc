@@ -81,10 +81,16 @@ static const uint16_t dccPulseGenerator_program_instructions[] = {
 };
 
 #if !PICO_NO_HARDWARE
+// pioasm did not generate the .pio_version and .used_gpio_ranges fields
+// These fields were manually added (needed for Pico SDK version 2 and higher)
 static const struct pio_program dccPulseGenerator_program = {
     .instructions = dccPulseGenerator_program_instructions,
     .length = 10,
     .origin = -1,
+    .pio_version = 0,          // We use RP2040 instructions only; not the added RP2350 ones
+    #if PICO_PIO_VERSION > 0   // .used_gpio_ranges is only defined for the RP2350 (> 0)
+    .used_gpio_ranges = 0,     // we use pins relative to out_pin_base
+    #endif
 };
 
 static inline pio_sm_config dccPulseGenerator_program_get_default_config(uint offset) {
