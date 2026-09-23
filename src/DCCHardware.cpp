@@ -1,6 +1,31 @@
 #include <Arduino.h>
 
-#define TMC
+//************************************************************************************************
+// Operating mode selection
+// ========================
+// This library can be used in three different operating modes: TMC, Z21PG and HQ.
+//
+// The mode may be chosen explicitly, by removing the comment in front of one of the three
+// #defines below (or by passing the define to the compiler).
+//
+// If no mode is chosen explicitly, the mode is selected automatically:
+// - Raspberry Pi RP2040 / RP2350 boards => TMC
+// - all other boards                    => HQ
+//
+// Note that TMC mode is available for the RP2040 / RP2350 only. The other two modes support
+// a wider range of processors; see the tables further down in this file.
+//************************************************************************************************
+//#define TMC
+//#define Z21PG
+//#define HQ
+
+#if !defined(TMC) && !defined(Z21PG) && !defined(HQ)
+  #if defined(ARDUINO_ARCH_RP2040)
+    #define TMC                   // Default for the Raspberry Pi RP2040 / RP2350
+  #else
+    #define HQ                    // Default for all other boards
+  #endif
+#endif
 
 // Create a define for all DxCore variants, to improve readability
 #if defined(__AVR_DA__) || defined(__AVR_DB__) || defined(__AVR_DD__) || \
@@ -62,7 +87,7 @@
 
 
 // ================= HQ =================
-#else
+#elif defined(HQ)
 
   // AVR DxCore
   #if defined(AVR_DXCORE)
@@ -84,5 +109,10 @@
   #else
     #error No DCCHardware implementation for this processor / board (HQ mode)
   #endif
+
+
+// ================= No mode selected =================
+#else
+  #error No operating mode selected; choose TMC, Z21PG or HQ
 
 #endif
