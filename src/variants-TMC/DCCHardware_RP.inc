@@ -161,7 +161,7 @@
 #define TTS2 US_TO_PIO(193)           // RCN-217: start channel 2 (Unused by the current code)
 
 #define INRUSH_ON  US_TO_PIO( 2.5)    // On-time:  must stay below tOCP (~3 us)
-#define INRUSH_OFF US_TO_PIO(17.5)    // Off-time: configurable, keep between 10 and 20 us
+#define INRUSH_OFF US_TO_PIO(17.5)    // Off-time: see extras/variants-TMC/inrush-off-time.md
 #define INRUSH_REPEATS 25             // Number of ON/OFF cycles per inrush packet (25 => 1 ms)
 
 #define MAX_SYMBOLS 128               // Long enough to hold a 6 byte DCC packet / inrush pattern
