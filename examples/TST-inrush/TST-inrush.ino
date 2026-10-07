@@ -65,6 +65,11 @@ void setup() {
 
 void handleCommand(char cmd, long value, bool hasValue) {
   bool on = hasValue ? (value != 0) : true;   // For the on/off commands: no digit means "on"
+  // Echo the received command, so it is clear that it arrived and how it was interpreted
+  monitor.print("> ");
+  monitor.print(cmd);
+  if (hasValue) monitor.print(value);
+  monitor.println();
   switch (cmd) {
     case 'i':                                 // Single inrush burst
       if (hasValue) burstMs = value;
@@ -80,7 +85,7 @@ void handleCommand(char cmd, long value, bool hasValue) {
     case 'p': dps.setpower(on ? ON : OFF); break;
     case 's': if (on) dccPacketEngine.enterServiceMode(); else dccPacketEngine.leaveServiceMode(); break;
     case 'c': dps.setrailcom(on); break;
-    case 'v': dccPacketEngine.setDccSignalInverted(on); break;
+    case 'v': dccInverted = on; dccPacketEngine.setDccSignalInverted(on); break;
     case 'm': dccPacketEngine.useMonitorPinforInrush(on); break;
     case 'o': if (on) dps.enable_additional_DCC_output(PIN_MONITOR);
               else dps.disable_additional_DCC_output();

@@ -16,6 +16,9 @@ DCCPacketScheduler dps;
 // Test settings, may be changed via the serial monitor
 uint32_t  burstMs = 5;        // Duration of a single inrush burst, in ms
 uint32_t  gapMs   = 20;       // Pause between repeated inrush bursts, in ms
+bool      dccInverted = false;  // DCC signal inverted (v1). The library has no getter, so we keep a copy.
+                                // Inverted: IN1 = IN2 = 1 during RailCom gap and inrush OFF phase (brake).
+                                // Non inverted: IN1 = IN2 = 0 (coast). Both only valid in PWM mode (PMODE high).
 
 // What is running?
 bool      accessory;          // Send accessory commands
@@ -185,7 +188,7 @@ void showMenu(void) {
   monitor.println("  p1/p0  rail power on / off");
   monitor.println("  s1/s0  service mode on / off");
   monitor.println("  c1/c0  RailCom gap on / off");
-  monitor.println("  v1/v0  DCC signal inverted on / off");
+  monitor.println("  v1/v0  DCC signal inverted (brake) / non inverted (coast)");
   monitor.println("  m1/m0  inrush pattern on the monitor pin on / off");
   monitor.println("  o1/o0  monitor (RailSync) output on / off");
   monitor.println("  h1/h0  H-bridge enable pin high / low");
@@ -217,6 +220,9 @@ void showStatus(void) {
   monitor.print(dccPacketEngine.isServiceModeEnabled() ? "on " : "off");
   monitor.print("  H-bridge: ");
   monitor.println(digitalRead(PIN_DCC_ACTIVE) ? "on " : "off");
+
+  monitor.print("DCC signal: ");
+  monitor.println(dccInverted ? "inverted (brake)" : "non inverted (coast)");
 
   monitor.print("Accessory: ");
   monitor.print(accessory ? "on " : "off");
