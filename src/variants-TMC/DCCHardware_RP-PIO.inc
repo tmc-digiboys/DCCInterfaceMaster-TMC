@@ -1,4 +1,4 @@
-// File: DCCHardware-RP-PICO-PIO.h
+// File: DCCHardware_RP-PIO.inc
 //
 // The Arduino IDE can not (yet??) compile PIO assemby code itself.
 // Therefore we need an offline tool, to compile that assembly code
@@ -7,59 +7,44 @@
 //
 // For this specific program, we used the PIO assembly code below
 //
-// The code shows a single state machine, acting on 3 consecutive pins.
+// The code shows a single state machine, acting on 2 consecutive pins.
+// The first pin is EN (Enable).
+// The second pin is PH (Phase)
 // The duration of each bit is taken from the FIFO / osr.
+// The PIO_OFFSET = 4
 //
-// State machine frequency: 4 MHz (250 ns per instruction).
-// Set the clock divider accordingly, e.g. with a 125 MHz system clock:
-//   sm_config_set_clkdiv(&c, 31.25f);          // 125 MHz / 4 MHz
-// or with a 133 MHz system clock:
-//   sm_config_set_clkdiv(&c, 33.25f);          // 133 MHz / 4 MHz
-//
-// Timing (verified by cycle counting and simulation):
-// Each phase (A and B) has a fixed overhead of exactly 4 cycles = 1 us.
-// A duration value of N therefore gives a phase length of:
-//   (N + 4) * 250 ns
-// So, to obtain a phase of T microseconds, pass:
-//   N = (T * 4) - 4     (i.e. (T - 1) * 4)
-// Examples:
-//   T = 2.5 us -> N = 6
-//   T = 3.0 us -> N = 8
-//   T = 58 us  -> N = 228
-// Minimum phase length: N = 0 -> 1.0 us
-// Maximum phase length: N = 8191 -> 2048.75 us (~2 ms)
-//
-// Both phases are exactly equally long for equal N; the 'nop' in
-// phase A compensates for the 'pull' (1 cycle) executed in phase B.
-// The .wrap at the end is performed by hardware and costs no cycles.
+// Timing:
+// Each phase has a fixed overhead of 4 cycles (PIO_OFFSET), so a
+// duration N gives a phase of (N + 4) us, i.e. N = T - 4.
+// Range: 4 us (N = 0) to 16387 us (N = 16383).
+// The 'nop' in phase A compensates for the 'pull' in phase B.
 
 /*
 .program dccPulseGenerator
-; State machine frequency: 4 MHz (250 ns per instruction)
+; State machine frequency: 1 MHz (1 µs per instruction)
 ; OSR layout (LSB -> MSB):
-; bit 0: level A - first pin
-; bit 1: level A - second pin
-; bit 2: level A - third pin
-; bits 3..15: durationA (in units of 250 ns, phase = (durationA + 4) * 250 ns)
+; bit 0: level A - first pin = EN
+; bit 1: level A - second pin = PH
+; bits 2..15: durationA (phase = (durationA + 4) us)
 ; bit 16: level B - first pin
 ; bit 17: level B - second pin
-; bit 18: level B - third pin
-; bits 19..31: durationB (in units of 250 ns, phase = (durationB + 4) * 250 ns)
+; bits 18..31: durationB (phase = (durationB + 4) us)
 
 .wrap_target
     pull                 ; 32-bit symbol from FIFO -> OSR
-    out pins, 3          ; bit 0, 1 and 2 -> output pins (levelA)
-    out x, 13            ; bits 3..15 -> X (durationA)
+    out pins, 2          ; bit 0 and 1 -> output pins (levelA)
+    out x, 14            ; bits 2..15 -> X (durationA)
     nop                  ; compensation to make phase A and B equally long
 loop_A:
     jmp x-- loop_A       ; wait for durationA
-    out pins, 3          ; bit 16, 17 and 18 -> output pins (levelB)
-    out x, 13            ; bits 19..31 -> X (durationB)
+    out pins, 2          ; bit 16 and 17 -> output pins (levelB)
+    out x, 14            ; bits 18..31 -> X (durationB)
 loop_B:
     jmp x-- loop_B       ; wait for durationB
 .wrap                    ; hardware wrap back to start (costs no cycle)
 
 */
+
 
 
 // -------------------------------------------------- //
@@ -82,12 +67,12 @@ loop_B:
 static const uint16_t dccPulseGenerator_program_instructions[] = {
             //     .wrap_target
     0x80a0, //  0: pull   block
-    0x6003, //  1: out    pins, 3
-    0x602d, //  2: out    x, 13
+    0x6002, //  1: out    pins, 2
+    0x602e, //  2: out    x, 14
     0xa042, //  3: nop
     0x0044, //  4: jmp    x--, 4
-    0x6003, //  5: out    pins, 3
-    0x602d, //  6: out    x, 13
+    0x6002, //  5: out    pins, 2
+    0x602e, //  6: out    x, 14
     0x0047, //  7: jmp    x--, 7
             //     .wrap
 };

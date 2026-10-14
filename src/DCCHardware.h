@@ -5,6 +5,7 @@
 // author:    Aiko Pras
 // version:   2026-02-01 V1.0.1 ap initial version
 //            2026-09-23 V1.1.0 ap Inrush protection added, to prevent DRV887x OCP
+//            2026-10-14 V1.2.0 ap Inrush protection removed. TMC variant added
 //
 // history:   This is a further development of earlier DCCHardware.h files.
 //            It has been changed into a clean C++ class file and avoids the
@@ -84,7 +85,7 @@
 //   control input during RailCom reception.
 //
 // - StopOutputSignal()
-//   Forces the dccRailAuxPin LOW.
+//   Forces dccRailAuxPin to its inactive level (default HIGH).
 //
 // - RunOutputSignal()
 //   Re-enables the dccRailAuxPin signal.
@@ -92,6 +93,45 @@
 // - dccMonitorPin
 //   Has no function in HQ mode and does not produce any signal.
 //
+// -----------------------------------------------------------------------------
+// TMC MODE (RP2040 / RP2350; DRV887x H-bridge in PH/EN mode)
+// -----------------------------------------------------------------------------
+//
+// Pin roles are as in HQ (dccRailPin = DCC, dccRailAuxPin = enable/cutout),
+// but both pins are driven by a single PIO state machine. EN and PH therefore
+// always change at exactly the same moment. Unlike HQ, the aux pin is
+// active-high by default (see setAuxActiveLevel()), which fits the DRV8874.
+//
+// In this mode:
+//
+// - dccRailPin
+//   Carries the primary DCC waveform and connects to PH. If RailCom is
+//   enabled via setRailCom(), the waveform contains a RailCom gap.
+//
+// - dccRailAuxPin
+//   Connects to EN. It is HIGH while the output is active, and LOW during the
+//   RailCom gap and after StopOutputSignal() (default active level). If EN is
+//   LOW, the DRV887x brakes (both outputs low), which shorts the track as
+//   required by RCN-217 during the cutout.
+//   The PIO drives both pins as one consecutive group, starting with EN.
+//   dccRailAuxPin must therefore be dccRailPin - 1; otherwise both pins are
+//   set to 0xFF.
+//
+// - StopOutputSignal()
+//   Forces dccRailAuxPin (EN) LOW. dccRailPin keeps carrying DCC.
+//
+// - RunOutputSignal()
+//   Re-enables dccRailAuxPin (EN).
+//
+// - setDccSignalInverted()
+//   Inverts dccRailPin (PH) only; EN is not affected.
+//
+// - setAuxActiveLevel()
+//   Sets the active level of dccRailAuxPin (EN). Default is HIGH, as
+//   required by the DRV887x. PH is not affected.
+//
+// - dccMonitorPin
+//   Has no function in TMC mode and does not produce any signal.
 //
 // -----------------------------------------------------------------------------
 // This source file is subject of the GNU general public license 3,
@@ -108,9 +148,9 @@ class DccPacketEngine {
   public:
 
     // DCC output pins
-    uint8_t dccRailPin;   	                      // Main DCC waveform; may include RailCom gap
-    uint8_t dccRailAuxPin;	                      // Z21PG: inverted DCC; HQ: RailCom gap signal
-    uint8_t dccMonitorPin;                        // Optional: continuous DCC without RailCom gap (Z21PG only; unused in HQ)
+    uint8_t dccRailPin;   	                      // Main DCC waveform; may include RailCom gap; TMC: Phase signal (PH)
+    uint8_t dccRailAuxPin;	                      // Z21PG: inverted DCC; HQ: RailCom gap signal; TMC: Enable signal (EN)
+    uint8_t dccMonitorPin;                        // Optional: continuous DCC without RailCom gap (Z21PG only; unused in HQ and TMC)
 
     // DCC message specific
     volatile bool canAcceptPacket;                // Flag that tells the user that a new packet may be sent
@@ -127,11 +167,12 @@ class DccPacketEngine {
     bool isServiceModeRepeating(void);            // True while the ISR is repeating the current SM packet
     void stopServiceModeRepeats(void);            // Abort SM retransmissions (e.g. after ACK)
 
-//TODO: Implement these in all variants!!
+//TODO: Remove this later in all variants. For now keep it as stubs
     // Inrush protection: Methods to enter / leave
     void enterInrushMode(void);                   // send sequence of short pulses to prevent DRV887x OCP
     void leaveInrushMode(void);                   // Back to normal mode
     bool isInrushModeEnabled(void);               // True while inrush mode is active
+    void useMonitorPinforInrush(bool value);      // TODO: MOET WEG
 
     // RailCom specific
     void setRailCom(bool active);                 // Enable / disable generation of the RailCom gap
@@ -139,7 +180,7 @@ class DccPacketEngine {
     bool railComGap(void);                        // Does the DCC Harware generate a Railcom gap at this moment?
 
     // Init, start and stop
-    void StopOutputSignal(void);                  // Forces dccRailPin (Z21PG & HQ) and dccRailAuxPin (HQ) LOW
+    void StopOutputSignal(void);                  // Z21PG: both rail pins LOW; HQ & TMC: Aux pin inactive
     void RunOutputSignal(void);                   // Re-enables the signal on the pins
     void setupWaveformGenerator();                // Setup and start the waveform generator
 
@@ -147,9 +188,8 @@ class DccPacketEngine {
     void setDccSignalInverted(bool inverted);     // Changes the polarity of the DCC signal(s)
     void setPreambleLength(uint8_t value);        // Length of normal preamble (>= 17)
     void setPreambleLengthSM(uint8_t value);      // Length of preamble in Service Mode (>= 20)
-    void setAuxActiveLevel(bool activeHigh);      // Only HQ: the AuxPin value after RunOutputSignal()
+    void setAuxActiveLevel(bool activeHigh);      // HQ and TMC: the AuxPin value after RunOutputSignal()
     void setRailComGapInAux(bool useForRcCutout); // Only HQ: is the AuxPin used for the RC cutout?
-    void useMonitorPinforInrush(bool value);      // The monitor pin is also used for inrush protection
 
     DccPacketEngine();                            // Constructor declaration
 };

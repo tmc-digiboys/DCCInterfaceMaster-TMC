@@ -1,37 +1,34 @@
 //************************************************************************************************
 //
 // File:            DCCHardware_RP.inc - TMC variant
-// Purpose:         DCC Waveform Generator for RP2040 (Raspberry Pi Pico) using PIO + DMA
+// Purpose:         DCC Waveform Generator for RP2040 / RP2350 using PIO + DMA
 // Copyright 2026:  Aiko Pras
 // History:         2026-03-30 / Aiko Pras
-//                  2026-09-22 (AP) - Adjusted for SDK version >= 2 and 4 Mhz clock
+//                  2026-09-22 (AP) - Adjusted for SDK version >= 2 and 4 MHz clock
 //                  2026-09-23 (AP) - Inrush protection added, to prevent DRV887x OCP
+//                  2026-10-14 (AP) - Changed from PWM to PH/EN mode. Inrush removed.
+//                                    Monitor pin no longer supported (two pins only).
+//                                    PIO clock back from 4 MHz to 1 MHz.
 //
 // Resources:
-// - Pins: Two or three GPIO pins that can be controlled by a PIO state machine
+// - Pins: Two consecutive GPIO pins that can be controlled by a PIO state machine
 // - PIO: one PIO block with one state machine
 // - DMA: one DMA channel to feed the PIO TX FIFO
 //
-// Pin usage:
-// The pins that the PIO uses for output MUST be consecutive pins.
-// Therefore dccRailPin is taken as first pin, and:
-// - dccRailAuxPin becomes dccRailPin + 1, and
-// - dccMonitorPin becomes dccRailPin + 2.
-// If the application configures dccMonitorPin as 0xFF, it will be ignored.
-//
-// Monitor pin
-// ===========
-// The monitor pin originates from the Z21PG design, where it was used for LocoNet
-// RailSync and S88. The idea there was that switches and signals kept working even
-// while the main track was short-circuited. It therefore always carried valid DCC
-// packets, regardless of Power On/Off status.
-// On future TMC boards this signal will no longer be used, and dccMonitorPin now
-// defaults to 0xFF. This leaves the pin unused by the PIO and free for other use.
+// Pin usage
+// =========
+// This driver is intended for DRV887x H-bridges in PH/EN mode:
+// - dccRailPin    => PH: carries the DCC waveform
+// - dccRailAuxPin => EN: LOW (inactive) during the RailCom gap and after StopOutputSignal()
+// The PIO drives both pins as one consecutive group, starting with EN. Therefore
+// dccRailAuxPin must be dccRailPin - 1; otherwise both pins are set to 0xFF.
+// On the RP2350B both pins must lie within GPIO 0..31 or GPIO 16..47.
+// dccMonitorPin is not supported and will be ignored.
 //
 // Design choices
 // ==============
-// This driver uses the RP2040 PIO (Programmable IO) and DMA to generate a precise,
-// jitter-free DCC waveform.
+// This driver uses the RP2040 / RP2350 PIO (Programmable IO) and DMA to generate a
+// precise, jitter-free DCC waveform.
 //
 // - A PIO state machine generates the DCC signal based on precomputed waveform symbols.
 // - DMA feeds the PIO TX FIFO with symbol data, avoiding CPU involvement during transmission.
@@ -42,17 +39,18 @@
 // Symbol-based waveform generation
 // ================================
 // The DCC signal is encoded as a sequence of half-bits:
-//   - Logical '1'  → short pulse (≈58 µs total)
-//   - Logical '0'  → long pulse  (≈100 µs total)
+//   - Logical '1' → two half-bits of 58 us
+//   - Logical '0' → two half-bits of 100 us
 //
-// Two halfbits form one symbol. Symbols are precomputed and stored in packet buffers.
-// Symbols consists of phases (level + duration), similar to ESP32 RMT.
-
-// Special symbols include:
-//   - End bit
-//   - gap1: first 29us of a cutout start bit
-//   - gap1: Second 29us of a cutout start bit
-//   - gap1: remaining (three) cutout bits
+// Each symbol holds one DCC bit: two phases (A and B), each with a level for both pins
+// (2 bits: EN and PH) and a duration (14 bits). See DCCHardware_RP-PIO.inc.
+// Symbols are precomputed and stored in packet buffers, similar to the ESP32 RMT.
+//
+// Special symbols:
+//   - endbit: the DCC end bit
+//   - gap: 29 us DCC (first half of the cutout start bit), then 435 us cutout
+// The gap thus starts 29 us and ends 464 us after the end bit
+// (RCN-217: TCS 26..32 us, TCE 454..488 us).
 //
 // DMA-driven transmission
 // =======================
@@ -89,39 +87,23 @@
 //
 // RailCom support
 // ===============
-// RailCom cutout is supported on the DCC and AUX pins.
-// The monitor pin has never a cutout
+// With setRailCom(true) the gap is generated on both pins. EN is then LOW, so the
+// DRV887x brakes (both outputs low) and shorts the track, as required by RCN-217.
+// setRailComGapInAux() has no function in this driver.
 //
 // Service Mode
 // ============
 // Service Mode packets:
 // - Use a longer preamble
+// - Have no RailCom gap
 // - Are automatically repeated (configurable count)
 // - Temporarily replace idle packets with reset packets
 //
 // The ISR manages repetition without CPU intervention in the main loop.
 //
-// Inrush protection waveform
-// ===========================
-// For inrush protection of DRV887x H-Bridges we need a pulse signal that is 2,5us high
-// (this value must be shorter than the OCP reaction time of 3us), followed by a low signal
-// (coast or brake, depending on the signal-inversion setting) of something between 10 and 20us.
-// The length of this low signal may be modified but should be long enough to avoid thermal
-// overload. To avoid any DC offset on the tracks, the high pulse will alter between both
-// output pins. Note: the idea for this inrush protection mechanism was copied from DCC-ex.
-//
-// Reaction time and multiple nFAULT events:
-// A default packet (idle/reset) is handed to the DMA as a single, atomic transfer and
-// cannot be interrupted mid-flight. Since such a packet can take several milliseconds,
-// while DRV887x tRETRY is only 2 ms, the application code may see multiple nFAULT/retry
-// cycles before the inrush pattern appears on the track.
-// This is a known and accepted limitation of the DMA-driven packet architecture.
-//
 // Call order
 // ==========
 // setupWaveformGenerator() must be called first, before any other method of this class.
-// enterInrushMode() and RunOutputSignal()/StopOutputSignal() may be called in either
-// order relative to each other.
 //
 //************************************************************************************************//
 #include <Arduino.h>
@@ -148,7 +130,7 @@
 //================================================================================================
 //                                      Defines
 //================================================================================================
-#define MHZ_PIO    4                  // PIO clock speed, in MHz
+#define MHZ_PIO    1                  // PIO clock speed, in MHz
 #define PIO_OFFSET 4                  // Overhead induced by the PIO instructions, in PIO cycles
 
 // Convert a duration in microseconds to a PIO N value
@@ -160,16 +142,13 @@
 #define TTS1 US_TO_PIO( 80)           // RCN-217: start channel 1 (Unused by the current code)
 #define TTS2 US_TO_PIO(193)           // RCN-217: start channel 2 (Unused by the current code)
 
-#define INRUSH_ON  US_TO_PIO( 2.5)    // On-time:  must stay below tOCP (~3 us)
-#define INRUSH_OFF US_TO_PIO(17.5)    // Off-time: see extras/variants-TMC/inrush-off-time.md
-#define INRUSH_REPEATS 25             // Number of ON/OFF cycles per inrush packet (25 => 1 ms)
+#define MAX_SYMBOLS 128               // Long enough to hold a 6 byte DCC packet
+#define RAILCOM_CUTOUT_LENGTH 4       // 4 Preamble bits. See RCN-217 (Ausgabe 24.11.2025)
+#define TGAP US_TO_PIO(RAILCOM_CUTOUT_LENGTH * 116 - 29)   // Cutout after TCS: 435 us
 
-#define MAX_SYMBOLS 128               // Long enough to hold a 6 byte DCC packet / inrush pattern
-#define RAILCOM_CUTOUT_LENGTH 4       // see RCN-217 (Ausgabe 24.11.2025)
 #define PIO_USED pio0                 // Which PIO will we use?
 
-// Longest possible packet: preamble + 6 bytes (start bit + 8 bits each) + end bit,
-// plus one extra symbol when a RailCom cutout is inserted
+// Longest possible packet: preamble + 6 bytes (start bit + 8 bits each) + end bit
 #define MAX_PREAMBLE (MAX_SYMBOLS - (MaxDccSize * 9) - 2)   // = 72
 
 
@@ -181,11 +160,11 @@
 // A.1. Constructor definition and instantiation
 //************************************************************************************************
 DccPacketEngine::DccPacketEngine(){
-  // Set initial pin values.
+  // Default pins for the TMC-LZ210 board (RP2350B).
   // Normal usage: the application overwrites these values before setup (setupWaveformGenerator)
-  dccRailPin = 2;                              // Pin for DCC rail Signal, with RailCom support
-  dccRailAuxPin = 3;                           // Pin for Enable and RailCom gap (optional)
-  dccMonitorPin = 0xFF;                        // Pin for the DCC-Monitor (deprecated)
+  dccRailPin = 33;                             // PH: DCC signal              (GPIO33 => IN2/PH)
+  dccRailAuxPin = 32;                          // EN: Enable and RailCom gap  (GPIO32 => IN1/EN)
+  dccMonitorPin = 0xFF;                        // Not supported in this driver
 }
 
 // dccPacketEngine is the object that controls packet transmission for different hardware
@@ -199,10 +178,10 @@ DccPacketEngine dccPacketEngine;
 union dcc_waveform_symbol_t {
     uint32_t value;
     struct {
-        uint32_t levelA    : 3;    // use 3 bits
-        uint32_t durationA : 13;   // use 13 bits
-        uint32_t levelB    : 3;
-        uint32_t durationB : 13;
+        uint32_t levelA    : 2;    // use 2 bits
+        uint32_t durationA : 14;   // use 14 bits
+        uint32_t levelB    : 2;
+        uint32_t durationB : 14;
     } bits;
 };
 
@@ -215,14 +194,12 @@ struct DccSymbols {
   dcc_waveform_symbol_t one;    // DCC "1"
   dcc_waveform_symbol_t zero;   // DCC "0"
   dcc_waveform_symbol_t endbit; // DCC "1"
-  dcc_waveform_symbol_t gap1;   // Railcom gap - first 29 us
-  dcc_waveform_symbol_t gap2;   // Railcom gap - second 29 us
-  dcc_waveform_symbol_t gap3;   // Railcom gap - remaining 3 ONE bits
+  dcc_waveform_symbol_t gap;    // Railcom gap: 29 us cutout start, then 435 us cutout
 };
 static DccSymbols s;            // Short name, to improve readability in (inline) helper functions
 
 struct DccTxEngine {                      // Processor independent
-  uint pinsInUse = 0;                     // To distinguish between multiple setupWaveformGenerator calls
+  bool isInitialized = false;             // Set by setupWaveformGenerator()
   // User Packet
   DccPacket userPacket[2];                // packet ping-pong buffer
   uint8_t sendPacketIndex;                // owned by send()
@@ -232,9 +209,6 @@ struct DccTxEngine {                      // Processor independent
   // Prepared packets
   DccPacket idlePacket;                   // Precomputed idle packet
   DccPacket resetPacket;                  // Precomputed reset packet
-  DccPacket inrushPacket;                 // Precomputed inrush pattern
-  bool inrushAlsoOnMonitorPin = true;     // The inrush pattern also appears on the monitor pin
-  volatile bool inrushActive = false;     // True while inrush protection mode is active
   // Railcom
   bool railComAllowedOnDcc = false;       // DCC pin: should a RC gap be generated in the DCC signal?
   // Service Mode
@@ -245,8 +219,9 @@ struct DccTxEngine {                      // Processor independent
   // Preamble length
   volatile uint8_t preambleLength = 17;   // Length of the preamble in normal operation
   volatile uint8_t preambleLengthSM = 20; // Length of the preamble in Service Mode
-  // Polarity of the DCC signal
-  bool dccSignalInverted = false;
+  // Polarity of the DCC and Enable signal
+  bool dccSignalInverted = false;         //
+  bool auxEnableLevel = true;             // Level of EN once enabled (DRV887x: HIGH)
 };
 
 
@@ -262,7 +237,8 @@ static DccTxEngine dccTx;                 // This object holds generic data
 static PioTxEngine pioTx;                 // This object holds PIO specific data
 
 // Note that we do not (re)set railComAllowedOnDcc, smMaxRepeats, preambleLength,
-// preambleLengthSM and dccSignalInverted, since the user may already have set these values.
+// preambleLengthSM, dccSignalInverted and auxEnableLevel since the user may
+// already have set these values.
 static void initTxEngines() {
   // Service Mode settings
   dccTx.smActive = false;
@@ -300,14 +276,11 @@ void setPinInverted(uint pin, bool inverted) {
 //************************************************************************************************
 static void createDccBits() {
   // A DCC bit consists of two halfbits: A and B
-  // Step 1A: Determine for both halfbits the pin level for the two rail pins
-  uint8_t levelA = dccTx.dccOutputActive ? 0b001 : 0b000;  // pin 0
-  uint8_t levelB = dccTx.dccOutputActive ? 0b010 : 0b000;  // pin 1
-  uint8_t gapLevelA = 0b000;                               // both pins off
-  uint8_t gapLevelB = 0b000;                               // both pins off
-  // Step 1B: monitor pin (bit2) always mirrors phase A, regardless of power status
-  levelA |= 0b100;
-  gapLevelA |= 0b100;
+  // Step 1: Determine for both halfbits the levels of EN (bit 0) and PH (bit 1)
+  uint8_t en = dccTx.dccOutputActive ? 0b01 : 0b00;   // EN on/off
+  uint8_t levelA   = 0b10 | en;                       // PH=ON,  EN=on/off
+  uint8_t levelB   = 0b00 | en;                       // PH=OFF, EN=on/off
+  uint8_t levelGap = 0b00;                            // PH=OFF, EN=OFF (brake)
   // Step 2: add the timing bits
   // DCC "1"
   s.one.bits.levelA = levelA;
@@ -324,21 +297,11 @@ static void createDccBits() {
   s.endbit.bits.durationA = ONE;
   s.endbit.bits.levelB = levelB;
   s.endbit.bits.durationB = ONE;
-  // Railcom start bit - Part 1
-  s.gap1.bits.levelA = levelA;
-  s.gap1.bits.durationA = TCS;
-  s.gap1.bits.levelB = gapLevelA;
-  s.gap1.bits.durationB = TCS;
-  // Railcom start bit - Part 2
-  s.gap2.bits.levelA = gapLevelB;
-  s.gap2.bits.durationA = TCS;
-  s.gap2.bits.levelB = gapLevelB;
-  s.gap2.bits.durationB = TCS;
-  // Railcom start bit - Part 3
-  s.gap3.bits.levelA = gapLevelA;
-  s.gap3.bits.durationA = ONE;
-  s.gap3.bits.levelB = gapLevelB;
-  s.gap3.bits.durationB = ONE;
+  // RailCom gap: first half of the cutout start bit, followed by the cutout
+  s.gap.bits.levelA = levelA;
+  s.gap.bits.durationA = TCS;
+  s.gap.bits.levelB = levelGap;
+  s.gap.bits.durationB = TGAP;
 };
 
 
@@ -360,12 +323,8 @@ static void pushPreamble(dcc_waveform_symbol_t *buf, int &i) {
     // Normal mode.
     int length = dccTx.preambleLength;
     if (dccTx.railComAllowedOnDcc) {  // Cutout needed?
-      buf[i++] = s.gap1;              // First part of Railcom startbit
-      buf[i++] = s.gap2;              // Second part of Railcom startbit
-      buf[i++] = s.gap3;              // Three preamble bits, only on the monitor pin
-      buf[i++] = s.gap3;
-      buf[i++] = s.gap3;
-      length = length - 4;
+      buf[i++] = s.gap;               // Cutout start bit + three preamble bits
+      length = length - RAILCOM_CUTOUT_LENGTH;
     }
     for (int p = 0; p < length; p++) pushBit(buf, i, 1);
   }
@@ -407,36 +366,6 @@ static inline void createDccDefaultPackets() {
 }
 
 
-static inline void createInrushPattern() {
-  // The inrush pulse train consists of two alternating "quarter-bits": IN1-on and IN2-on,
-  // each followed by an off-phase — analogous to the A/B halfbits of a regular DCC bit.
-  // Step 1A: Determine the pin levels for the two rail pins
-  uint8_t levelIn1 = dccTx.dccOutputActive ? 0b001 : 0b000;  // pin 0 on
-  uint8_t levelIn2 = dccTx.dccOutputActive ? 0b010 : 0b000;  // pin 1 on
-  uint8_t levelOff = 0b000;                                  // both rail pins off
-  // Step 1B: monitor pin (bit2) always mirrors the ON phase, regardless of power status
-  uint8_t monitorBit = dccTx.inrushAlsoOnMonitorPin ? 0b100 : 0b000;
-  levelIn1 |= monitorBit;
-  levelIn2 |= monitorBit;
-  // Step 2: build the alternating symbol pairs
-  // INRUSH_ON and INRUSH_OFF are #defines that calculate the durations
-  for (int r = 0; r < INRUSH_REPEATS; r++) {
-    int i = r * 2;
-    // Symbol A: IN1 on, then off
-    dccTx.inrushPacket.symbols[i].bits.levelA    = levelIn1;
-    dccTx.inrushPacket.symbols[i].bits.durationA = INRUSH_ON;
-    dccTx.inrushPacket.symbols[i].bits.levelB    = levelOff;
-    dccTx.inrushPacket.symbols[i].bits.durationB = INRUSH_OFF;
-    // Symbol B: IN2 on, then off (opposite polarity, for DC balance)
-    dccTx.inrushPacket.symbols[i+1].bits.levelA    = levelIn2;
-    dccTx.inrushPacket.symbols[i+1].bits.durationA = INRUSH_ON;
-    dccTx.inrushPacket.symbols[i+1].bits.levelB    = levelOff;
-    dccTx.inrushPacket.symbols[i+1].bits.durationB = INRUSH_OFF;
-  }
-  dccTx.inrushPacket.numberOfSymbols = INRUSH_REPEATS * 2;
-}
-
-
 //================================================================================================
 //                                          C: PIO DMA
 //================================================================================================
@@ -459,22 +388,14 @@ static inline void transmitNextPacket(DccPacket* packet) {
 
 
 static inline void procesNextPacket() {
-  // Priority 1: inrush protection
-  if (dccTx.inrushActive) {
-    // while inrush protection is active, we continuously send inrush "packets", which last
-    // around 1ms each.
-    dccTx.smRepeatsRemaining = 0;            // abort repeating ongoing SM messages, if any
-    dccTx.userPacketReady = false;           // discard any pending (possibly SM) packet
-    transmitNextPacket(&dccTx.inrushPacket);
-  }
-  // Priority 2: SM was entered earlier and the SM packet must still be repeated
-  else if (dccPacketEngine.isServiceModeRepeating()) {
+  // Priority 1: SM was entered earlier and the SM packet must still be repeated
+  if (dccPacketEngine.isServiceModeRepeating()) {
     transmitNextPacket(&dccTx.userPacket[dccTx.isrPacketIndex]);
     // Decrement counter (Note: decrease is atomic operation)
     uint8_t repeats = dccTx.smRepeatsRemaining;
     if (repeats > 0) dccTx.smRepeatsRemaining = repeats - 1;
   }
-  // Priority 3: normal case. Send a new user packet, or idle/reset
+  // Priority 2: normal case. Send a new user packet, or idle/reset
   else {
     if (dccTx.userPacketReady) {
       // We received a new packet from the user via the send() method.
@@ -493,7 +414,7 @@ static inline void procesNextPacket() {
         else {transmitNextPacket(&dccTx.resetPacket);}
     }
   }
-  if (dccTx.smRepeatsRemaining == 0 && !dccTx.inrushActive) dccPacketEngine.canAcceptPacket = true;
+  if (dccTx.smRepeatsRemaining == 0) dccPacketEngine.canAcceptPacket = true;
 }
 
 
@@ -546,7 +467,7 @@ static void PioSmDccInit(PIO pio, uint sm, uint offset, uint pin) {
   pio_sm_config pioConfig = dccPulseGenerator_program_get_default_config(offset);
   // Step 2: Configure the GPIO pins so they are controlled by the PIO instead of the SIO
   // Since we use multiple pins, pio_gpio_init should be called once per pin.
-  // Note that we MUST use consecutive GPIO pins (e.g. 2, 3, 4)
+  // Note that we MUST use consecutive GPIO pins (EN, PH)
 
   pio_gpio_init(pio, pin);
   pio_gpio_init(pio, pin+1);
@@ -559,7 +480,7 @@ static void PioSmDccInit(PIO pio, uint sm, uint offset, uint pin) {
   // independently, for the following instructions: set pins, x / out pins, x /
   // in pins, x and sideset pins, x
   sm_config_set_out_pins(&pioConfig, pin, 2);
-  // Step 5: Configure the clock to tick every 250 ns.
+  // Step 5: Configure the clock to tick every 1 us.
   // Use F_CPU to compensate for different clock speeds.
   // Use MHZ_PIO to allow easy changes to the clock
   float pio_clk = (float)MHZ_PIO * 1e6f;
@@ -579,24 +500,15 @@ static void PioSmDccInit(PIO pio, uint sm, uint offset, uint pin) {
   pio_sm_init(pio, sm, offset, &pioConfig);
 }
 
-static void addThirdPioPin(uint pin) {
-  pio_gpio_init(pioTx.pio, pin+2);
-  pio_sm_set_consecutive_pindirs(pioTx.pio, pioTx.smDcc, pin, 3, true);
-  // We can't use sm_config_set_out_pins, since that would require a reinitialise of the SM
-  // Therefore we modify the PINCTRL register directly
-  pioTx.pio->sm[pioTx.smDcc].pinctrl = (pioTx.pio->sm[pioTx.smDcc].pinctrl
-    & ~PIO_SM0_PINCTRL_OUT_COUNT_BITS) | (3u << PIO_SM0_PINCTRL_OUT_COUNT_LSB);
-}
-
 static void setupPio() {
   // Step 1: Select which PIO we will use. The RP2040 has pio0 and pio1, RP2350 has also pio2
   pioTx.pio = PIO_USED;
   // Step 2: The PIO can only address 32 consecutive GPIOs at a time. That is okay for the RP2040.
   // However, the RP2350 has 48 pins. If we use a RP2350, we must select via gpio_base = 0
   // (pins 0..31) or gpio_base = 16 (pins 16..47) which pins we use.
-  // All three pins we use (dccRailPin, +1, +2) must fit within a single such window,
-  // so we choose the window based on the highest of those three pins.
-  if ((dccPacketEngine.dccRailPin + 2) <= 31) pio_set_gpio_base(pioTx.pio, 0);
+  // Both pins we use must fit within a single such window, so we choose the window based on
+  // the highest of these two pins, which is dccRailPin.
+  if ((dccPacketEngine.dccRailPin) <= 31) pio_set_gpio_base(pioTx.pio, 0);
     else pio_set_gpio_base(pioTx.pio, 16);
   // Step 3: On this PIO, ask which of the four state machines are available (0..3)
   // The parameter "true" says that this state machine will also be assigned
@@ -605,7 +517,7 @@ static void setupPio() {
   // The start address is returned as parameter and assigned to "offset"
   uint dccOffset = pio_add_program(pioTx.pio, &dccPulseGenerator_program);
   // Step 5: Initialise  and start the DCC-pin state machine (true => enable, false => disable)
-  PioSmDccInit(pioTx.pio, pioTx.smDcc, dccOffset, dccPacketEngine.dccRailPin);
+  PioSmDccInit(pioTx.pio, pioTx.smDcc, dccOffset, dccPacketEngine.dccRailAuxPin);
   pio_sm_set_enabled(pioTx.pio, pioTx.smDcc, true);
 }
 
@@ -617,48 +529,32 @@ static void setupPio() {
 //************************************************************************************************
 // E1: setUp and Send
 //************************************************************************************************
-// As part of setup(), the packet scheduler code disables dccMonitorPin by default (0xFF).
-// To enable the monitor pin, enable_additional_DCC_output() should be called, which sets
-// dccMonitorPin to some valid value, after which setupWaveformGenerator is called a second time.
-// The code below can handle this particular call sequence, although it also works the first time
-// provided dccMonitorPin is a valid pin number.
+// As part of setup(), the packet scheduler code should call setupWaveformGenerator.
+// The dccRailPin number must be one higher than the dccRailAuxPin number.
+// If not, setupWaveformGenerator returns with both pins set to 0xFF
 void DccPacketEngine::setupWaveformGenerator() {
-  switch (dccTx.pinsInUse) {
-    case 0:
-      if ((uint8_t)(dccRailPin + 1) < NUM_BANK0_GPIOS) {   // We need at least 2 pins
-        // Step 1: Set default values
-        initTxEngines();
-        // Step2: create bit symbols and default packets, as well as the inrush pattern
-        createDccDefaultPackets();
-        createInrushPattern();
-        // Step 3: Setup the PIO and DMA that feeds the PIO
-        setupPio();
-        setupDma();
-        // Step 4: Invert the DCC signal, if needed
-        setDccSignalInverted(dccTx.dccSignalInverted);
-        // Step 5: Initialization is done
-        dccRailAuxPin = dccRailPin + 1;                // tell the user which pin is used
-        dccTx.pinsInUse = 2;
-        if (dccMonitorPin < NUM_BANK0_GPIOS) {         // Should we already configure the third pin
-          addThirdPioPin(dccPacketEngine.dccRailPin);  // Use dccRailPin as start pin
-          dccMonitorPin = dccRailPin + 2;              // tell the user which pin is used
-          dccTx.pinsInUse = 3;
-        }
-        dccPacketEngine.canAcceptPacket = true;
-      }
-    break;
-    case 2:
-      // If the dccMonitorPin has "some" valid value ()
-      if (dccMonitorPin < NUM_BANK0_GPIOS) {           // We need a third pin
-        addThirdPioPin(dccPacketEngine.dccRailPin);    // Use dccRailPin as start pin
-        dccMonitorPin = dccRailPin + 2;                // tell the user which pin is used
-        dccTx.pinsInUse = 3;
-      }
-    break;
-    default:                                           // Should not occur
-    break;
+  if (dccTx.isInitialized) return;
+  if ((dccRailPin < NUM_BANK0_GPIOS) && (dccRailPin == dccRailAuxPin + 1)) {
+    // Step 1: Set default values
+    initTxEngines();
+    // Step2: create bit symbols and default packets
+    createDccDefaultPackets();
+    // Step 3: Setup the PIO and DMA that feeds the PIO
+    setupPio();
+    setupDma();
+    // Step 4: Restore pin polarities (pio_gpio_init resets them)
+    setDccSignalInverted(dccTx.dccSignalInverted);
+    setAuxActiveLevel(dccTx.auxEnableLevel);
+    // Step 5: Initialization is done
+    dccTx.isInitialized = true;
+    dccPacketEngine.canAcceptPacket = true;
+  }
+  else {   // pin numbers are invalid
+    dccRailPin = 0xFF;
+    dccRailAuxPin = 0xFF;
   }
 }
+
 
 void DccPacketEngine::send(const uint8_t* data, uint8_t size) {
   // Sends a DCC packet (3–6 bytes including XOR).
@@ -731,20 +627,12 @@ void DccPacketEngine::stopServiceModeRepeats(void) {
 //******************************************************************************
 // E3. Inrush Protection Mode interface methods
 //******************************************************************************
-void DccPacketEngine::enterInrushMode(void) {
-  // send sequence of short pulses to prevent DRV887x OCP
-  dccTx.inrushActive = true;
-}
-
-void DccPacketEngine::leaveInrushMode(void) {
-  // Back to normal mode
-  dccTx.inrushActive = false;
-}
-
-bool DccPacketEngine::isInrushModeEnabled(void) {
-// True while inrush mode is active
-  return dccTx.inrushActive;
-}
+// Inrush protection is no longer implemented for this variant
+// The empty stubs will be removed later
+void DccPacketEngine::enterInrushMode(void) {}
+void DccPacketEngine::leaveInrushMode(void) {}
+bool DccPacketEngine::isInrushModeEnabled(void) {return false;}
+void DccPacketEngine::useMonitorPinforInrush(bool value) {(void)value;}
 
 
 //******************************************************************************
@@ -764,24 +652,15 @@ bool DccPacketEngine::getRailCom(void) {
 // This routine allows higher-layer software to determine whether a RailCom gap
 // is currently in progress, so that rail voltage and/or current measurements
 // can be safely controlled. In this implementation we check the value of the
-// output pin via gpio_get_all64().
-// The idea is that, during the cutout, the DCC and the inverted pin will have
-// the same value (0 or 1, depending on setDccSignalInverted). We sample twice
-// since the PIO pin changes make take place during a sample.
+// EN pin via gpio_get_all64().
+// During the gap EN is at its disable level (LOW for the DRV887x), while track
+// power is on (dccOutputActive). gpio_get_all64() reads the pin level after
+// inversion, so we compare with auxEnableLevel.
 bool DccPacketEngine::railComGap(void) {
-  if (dccTx.inrushActive) return false;  // avoid false positives during inrush
-  bool cutoutDetected = false;
-  if (dccTx.dccOutputActive) {
-    uint64_t pins = gpio_get_all64();
-    bool pin0 = (pins >> dccRailPin) & 1;
-    bool pin1 = (pins >> (dccRailPin + 1)) & 1;
-    cutoutDetected = (pin0 == pin1);
-    if (cutoutDetected) {  // To avoid glitches, take a second sample
-      pins = gpio_get_all64();
-      pin0 = (pins >> dccRailPin) & 1;
-      pin1 = (pins >> (dccRailPin + 1)) & 1;
-      cutoutDetected = (pin0 == pin1);
-    }
+  if (!dccTx.isInitialized || !dccTx.dccOutputActive) return false;
+  bool cutoutDetected = ((gpio_get_all64() >> dccRailAuxPin) & 1) != dccTx.auxEnableLevel;
+  if (cutoutDetected) {  // To avoid glitches, take a second sample
+    cutoutDetected = ((gpio_get_all64() >> dccRailAuxPin) & 1) != dccTx.auxEnableLevel;
   }
   return cutoutDetected;
 }
@@ -790,37 +669,31 @@ bool DccPacketEngine::railComGap(void) {
 //******************************************************************************
 // E5: Start / Stop interface methods
 //******************************************************************************
-// This driver enables (disables) the signal on the DCC and inverted DCC pins.
-// The Monitor pin output will never be disabled, allowing switches and other
-// accessories to remain operational.
-//
-// When StopOutputSignal() is called, the flag dccOutputActive is disabled,
-// and createDccDefaultPackets and createInrushPattern are called.
-// These subroutines modify the bit mask for the 3 PIO pins, ensuring that the
-// DCC and inverted DCC pins will always stay low.
+// StopOutputSignal() and RunOutputSignal() switch the H-bridge off and on via EN.
+// Both change dccOutputActive and call createDccDefaultPackets(), which rebuilds the
+// symbols: after StopOutputSignal() EN is at its disable level (LOW for the DRV887x),
+// after RunOutputSignal() at its enable level. PH keeps carrying DCC in both cases.
+// Packets that were already built (the current packet, a pending user packet and its
+// Service Mode repeats) keep their old EN level.
 void DccPacketEngine::StopOutputSignal() {
   if (!dccTx.dccOutputActive) return;
   dccTx.dccOutputActive = false;
   createDccDefaultPackets();
-  createInrushPattern();
 }
 
 void DccPacketEngine::RunOutputSignal() {
   if (dccTx.dccOutputActive) return;
   dccTx.dccOutputActive = true;
   createDccDefaultPackets();
-  createInrushPattern();
 }
 
 //******************************************************************************
 // E6: Setters to change certain aspects of the DCC encoder
 //******************************************************************************
 void DccPacketEngine::setDccSignalInverted(bool inverted) {
-  // Inverts the polarity of the DCC and inverted DCC signal. Usefull to invert
-  // the signal to disable the H-Bridge. No impact on Monitor signal.
+  // Inverts the polarity of the DCC signal (PH). No impact on the Enable signal.
   dccTx.dccSignalInverted = inverted;
   setPinInverted(dccPacketEngine.dccRailPin, inverted);
-  setPinInverted(dccPacketEngine.dccRailPin + 1, inverted);
 }
 
 void DccPacketEngine::setPreambleLength(uint8_t value) {
@@ -837,11 +710,15 @@ void DccPacketEngine::setPreambleLengthSM(uint8_t value) {
   createDccDefaultPackets();         // Reset and Idle packet must be regenerated
 }
 
-void DccPacketEngine::useMonitorPinforInrush(bool value) {
-  if (dccTx.inrushActive) return;   // Avoid rebuilding a buffer the DMA may be reading
-  dccTx.inrushAlsoOnMonitorPin = value;
-  createInrushPattern();             // Rebuild, so the change takes effect immediately
+void DccPacketEngine::setAuxActiveLevel(bool activeHigh) {
+  // The PIO generates EN active-high; invert only for active-low hardware
+  bool activeLow = !activeHigh;
+  dccTx.auxEnableLevel = activeHigh;
+  setPinInverted(dccRailAuxPin, activeLow);
 }
 
-void DccPacketEngine::setRailComGapInAux(bool active) {(void)active;}         // Unused in this driver
-void DccPacketEngine::setAuxActiveLevel(bool activeHigh) {(void)activeHigh;}  // Unused in this driver
+void DccPacketEngine::setRailComGapInAux(bool active) {(void)active;}
+// Has no function in TMC mode.
+// With setRailCom(true) the gap is always generated on both PH and EN.
+// EN LOW is the only way to ensure that the DRV887x puts a brake signal on the tracks,
+// as required by RCN217. If PH stays 435 us HIGH or LOW, a DC offset will be the result
