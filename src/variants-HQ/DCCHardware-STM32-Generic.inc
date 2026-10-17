@@ -345,9 +345,8 @@ void DccPacketEngine::stopServiceModeRepeats(void) {
 //******************************************************************************
 // 7. Inrush Protection Mode interface methods
 //******************************************************************************
-// Inrush protection is not implemented for this variant: empty stubs
-void DccPacketEngine::enterInrushMode(void) {}
-void DccPacketEngine::leaveInrushMode(void) {}
+// DRV8874 Inrush protection not implemented in this variant
+void DccPacketEngine::startInrushMode(uint16_t ms) {(void)ms;}
 bool DccPacketEngine::isInrushModeEnabled(void) {return false;}
 
 
@@ -412,9 +411,6 @@ void DccPacketEngine::setRailComGapInAux(bool useForRcCutout) {
   dccISR.railComAllowedOnAux = useForRcCutout;
   dccISR.railComActiveOnAux = dccISR.railComAllowedOnAux;
 }
-
-// Not used by this variant
-void DccPacketEngine::useMonitorPinforInrush(bool value) {(void)value;}
 
 //******************************************************************************
 // 9. Start / Stop interface methods

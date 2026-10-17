@@ -5,7 +5,8 @@
 // author:    Aiko Pras
 // version:   2026-02-01 V1.0.1 ap initial version
 //            2026-09-23 V1.1.0 ap Inrush protection added, to prevent DRV887x OCP
-//            2026-10-14 V1.2.0 ap Inrush protection removed. TMC variant added
+//            2026-10-14 V1.2.0 ap Old inrush code removed. TMC variant added
+//            2026-10-16 V1.2.1 ap New inrush code added
 //
 // history:   This is a further development of earlier DCCHardware.h files.
 //            It has been changed into a clean C++ class file and avoids the
@@ -89,7 +90,7 @@
 //
 // - RunOutputSignal()
 //   Re-enables the dccRailAuxPin signal.
-
+//
 // - dccMonitorPin
 //   Has no function in HQ mode and does not produce any signal.
 //
@@ -133,7 +134,12 @@
 // - dccMonitorPin
 //   Has no function in TMC mode and does not produce any signal.
 //
-// -----------------------------------------------------------------------------
+// - startInrushMode()
+//   High capacitive loads trigger the DRV8874 overcurrent protection (OCP).
+//   startInrushMode() temporarily replaces EN by short pulses, to charge
+//   such loads without OCP.
+//
+// ----------------------------------------------------------------------------------------------------
 // This source file is subject of the GNU general public license 3,
 // that is available at the world-wide-web at http://www.gnu.org/licenses/gpl.txt
 //
@@ -167,17 +173,14 @@ class DccPacketEngine {
     bool isServiceModeRepeating(void);            // True while the ISR is repeating the current SM packet
     void stopServiceModeRepeats(void);            // Abort SM retransmissions (e.g. after ACK)
 
-//TODO: Remove this later in all variants. For now keep it as stubs
-    // Inrush protection: Methods to enter / leave
-    void enterInrushMode(void);                   // send sequence of short pulses to prevent DRV887x OCP
-    void leaveInrushMode(void);                   // Back to normal mode
+    // Inrush protection (TMC only; empty stubs in the other variants)
+    void startInrushMode(uint16_t ms);            // Short EN pulses for ms, ending at a packet boundary
     bool isInrushModeEnabled(void);               // True while inrush mode is active
-    void useMonitorPinforInrush(bool value);      // TODO: MOET WEG
 
     // RailCom specific
     void setRailCom(bool active);                 // Enable / disable generation of the RailCom gap
     bool getRailCom(void);                        // Is generation of the RailCom gap enabled?
-    bool railComGap(void);                        // Does the DCC Harware generate a Railcom gap at this moment?
+    bool railComGap(void);                        // Does the DCC Hardware generate a Railcom gap at this moment?
 
     // Init, start and stop
     void StopOutputSignal(void);                  // Z21PG: both rail pins LOW; HQ & TMC: Aux pin inactive

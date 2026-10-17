@@ -658,10 +658,9 @@ void DccPacketEngine::stopServiceModeRepeats(void) {
 //******************************************************************************
 // E3. Inrush Protection Mode interface methods
 //******************************************************************************
-// Inrush protection is not implemented for this variant: empty stubs
+// DRV8874 Inrush protection not implemented in this variant
 // See the TMC variant for a driver that does implement it
-void DccPacketEngine::enterInrushMode(void) {}
-void DccPacketEngine::leaveInrushMode(void) {}
+void DccPacketEngine::startInrushMode(uint16_t ms) {(void)ms;}
 bool DccPacketEngine::isInrushModeEnabled(void) {return false;}
 
 
@@ -756,4 +755,3 @@ void DccPacketEngine::setPreambleLengthSM(uint8_t value) {
 
 void DccPacketEngine::setRailComGapInAux(bool active) {(void)active;}         // Unused in this driver
 void DccPacketEngine::setAuxActiveLevel(bool activeHigh) {(void)activeHigh;}  // Unused in this driver
-void DccPacketEngine::useMonitorPinforInrush(bool value) {(void)value;}       // Unused in this driver

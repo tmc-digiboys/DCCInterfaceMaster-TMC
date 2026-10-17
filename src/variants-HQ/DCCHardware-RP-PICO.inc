@@ -138,7 +138,7 @@
 DccPacketEngine::DccPacketEngine(){
   dccRailPin = 2;                                 // Pin for DCC rail Signal, with RailCom support
   dccRailAuxPin = 3;                              // Pin for Enable and RailCom gap (optional)
-  dccMonitorPin = 0xFF;                           // Not use in this HQ variant
+  dccMonitorPin = 0xFF;                           // Not used in this HQ variant
 }
 
 // dccPacketEngine is the object that controls packet transmission for different hardware
@@ -670,9 +670,8 @@ void DccPacketEngine::stopServiceModeRepeats(void) {
 //******************************************************************************
 // E3. Inrush Protection Mode interface methods
 //******************************************************************************
-// Inrush protection is not implemented for this variant: empty stubs
-void DccPacketEngine::enterInrushMode(void) {}
-void DccPacketEngine::leaveInrushMode(void) {}
+// DRV8874 Inrush protection not implemented in this variant
+void DccPacketEngine::startInrushMode(uint16_t ms) {(void)ms;}
 bool DccPacketEngine::isInrushModeEnabled(void) {return false;}
 
 
@@ -777,6 +776,3 @@ void DccPacketEngine::setPreambleLengthSM(uint8_t value) {
   dccTx.preambleLengthSM = value;    // Length of preamble in Service Mode
   createDccDefaultPackets();         // Reset and Idle packet must be regenerated
 }
-
-// Not used by this variant
-void DccPacketEngine::useMonitorPinforInrush(bool value) {(void)value;}

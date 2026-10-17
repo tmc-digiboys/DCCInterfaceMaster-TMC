@@ -9,17 +9,21 @@
 //                  2026-10-14 (AP) - Changed from PWM to PH/EN mode. Inrush removed.
 //                                    Monitor pin no longer supported (two pins only).
 //                                    PIO clock back from 4 MHz to 1 MHz.
+//                  2026-10-16 (AP) - New inrush algorithm added. Start / Stop interface
+//                                    methods changed, to ensure immediate stop
 //
 // Resources:
 // - Pins: Two consecutive GPIO pins that can be controlled by a PIO state machine
 // - PIO: one PIO block with one state machine
 // - DMA: one DMA channel to feed the PIO TX FIFO
+// - PWM: the slice of the EN pin, for the inrush pulses
 //
 // Pin usage
 // =========
 // This driver is intended for DRV887x H-bridges in PH/EN mode:
 // - dccRailPin    => PH: carries the DCC waveform
-// - dccRailAuxPin => EN: LOW (inactive) during the RailCom gap and after StopOutputSignal()
+// - dccRailAuxPin => EN: LOW (inactive) during the RailCom gap and after
+//   StopOutputSignal(), PWM pulses during an inrush.
 // The PIO drives both pins as one consecutive group, starting with EN. Therefore
 // dccRailAuxPin must be dccRailPin - 1; otherwise both pins are set to 0xFF.
 // On the RP2350B both pins must lie within GPIO 0..31 or GPIO 16..47.
@@ -101,6 +105,18 @@
 //
 // The ISR manages repetition without CPU intervention in the main loop.
 //
+// Inrush protection
+// =================
+// After a DRV8874 nFault, in case of high capacitive loads, inrush protection may be applied.
+// Inrush protection puts a PWM signal on the Enable pin (2.5 us ON / 17.5 us OFF),
+// that is short enough to prevent the DRV8874 OCP from triggering.
+// The application starts it with startInrushMode(ms), preferably directly from its nFault
+// ISR. Since the DRV8874 keeps its outputs off for 2 ms after an nFault, ms should be
+// larger than 2 ms. The inrush ends at the end of a packet, after at least ms (max
+// INRUSH_MAX_MS). StopOutputSignal() ends it immediately.
+// During the inrush DCC packets get corrupted. The current packet is therefore
+// repeated, and sent once more after the inrush, so that it is not lost.
+//
 // Call order
 // ==========
 // setupWaveformGenerator() must be called first, before any other method of this class.
@@ -111,6 +127,7 @@
 #include "hardware/pio.h"
 #include "hardware/dma.h"
 #include "hardware/gpio.h"
+#include "hardware/pwm.h"
 #include "DCCHardware_RP-PIO.inc"
 
 /*
@@ -151,6 +168,13 @@
 // Longest possible packet: preamble + 6 bytes (start bit + 8 bits each) + end bit
 #define MAX_PREAMBLE (MAX_SYMBOLS - (MaxDccSize * 9) - 2)   // = 72
 
+// Settings specific for the inrush algorithm
+#define INRUSH_ON_US 2.5              // Length of ON pulse (in us, must be < 3us)
+#define INRUSH_OFF_US 17.5            // Length of OFF period between pulses (in us)
+#define INRUSH_MAX_MS 50              // Maximum time the inrush pattern may last (in ms)
+// The PWM counter runs at the system clock (divider 1) and is 16 bits wide
+static_assert((INRUSH_ON_US + INRUSH_OFF_US) * (F_CPU / 1000000.0f) <= 65536.0f,
+              "Inrush period too long for the PWM counter");
 
 //================================================================================================
 //                            A: Objects and Internal Data Structures
@@ -205,6 +229,7 @@ struct DccTxEngine {                      // Processor independent
   uint8_t sendPacketIndex;                // owned by send()
   volatile uint8_t isrPacketIndex;        // owned by DMA-ISR
   volatile bool userPacketReady;          // send() => DMA-ISR handover flag
+  DccPacket* currentPacket;               // Packet last handed to the DMA (owned by DMA-ISR)
   bool dccOutputActive = false;           // Flag used by RunOutputSignal / StopOutputSignal
   // Prepared packets
   DccPacket idlePacket;                   // Precomputed idle packet
@@ -222,6 +247,10 @@ struct DccTxEngine {                      // Processor independent
   // Polarity of the DCC and Enable signal
   bool dccSignalInverted = false;         //
   bool auxEnableLevel = true;             // Level of EN once enabled (DRV887x: HIGH)
+  // Inrush protection
+  volatile bool inrushActive;             // EN is connected to the PWM slice
+  volatile uint32_t inrushStartUs;        // Start of the inrush (time_us_32)
+  volatile uint32_t inrushDurationUs;     // Requested duration of the inrush
 };
 
 
@@ -232,9 +261,17 @@ struct PioTxEngine {                      // Processor dependent
   int dmaChannel;                         // The DMA channel for the PIO
 };
 
+
+struct PwmTxEngine {                      // Processor dependent
+  // We use the PWM slice of the EN pin for the inrush pulses
+  uint slice;                             // PWM slice of dccRailAuxPin (EN)
+};
+
+
 // Object instantiation
 static DccTxEngine dccTx;                 // This object holds generic data
 static PioTxEngine pioTx;                 // This object holds PIO specific data
+static PwmTxEngine pwmTx;                 // This object holds PWM specific data
 
 // Note that we do not (re)set railComAllowedOnDcc, smMaxRepeats, preambleLength,
 // preambleLengthSM, dccSignalInverted and auxEnableLevel since the user may
@@ -244,12 +281,15 @@ static void initTxEngines() {
   dccTx.smActive = false;
   dccTx.isServiceModePacket = false;
   dccTx.smRepeatsRemaining = 0;
+  // Inrush mode setting
+  dccTx.inrushActive = false;
   // Clear the user packet
   dccTx.userPacket[0].numberOfSymbols = 0;
   dccTx.userPacket[1].numberOfSymbols = 0;
   dccTx.userPacketReady = false;
   dccTx.sendPacketIndex = 0;
   dccTx.isrPacketIndex  = 1;                  // opposite of dccTx.sendPacketIndex
+  dccTx.currentPacket = &dccTx.idlePacket;
 }
 
 
@@ -277,9 +317,10 @@ void setPinInverted(uint pin, bool inverted) {
 static void createDccBits() {
   // A DCC bit consists of two halfbits: A and B
   // Step 1: Determine for both halfbits the levels of EN (bit 0) and PH (bit 1)
-  uint8_t en = dccTx.dccOutputActive ? 0b01 : 0b00;   // EN on/off
-  uint8_t levelA   = 0b10 | en;                       // PH=ON,  EN=on/off
-  uint8_t levelB   = 0b00 | en;                       // PH=OFF, EN=on/off
+  // EN is ON during normal bit transmission, but OFF during the Railcom cutout
+  // EN is also turned OFF during power off (StopOutputSignal), via the SIO
+  uint8_t levelA   = 0b11;                            // PH=ON,  EN=ON
+  uint8_t levelB   = 0b01;                            // PH=OFF, EN=ON
   uint8_t levelGap = 0b00;                            // PH=OFF, EN=OFF (brake)
   // Step 2: add the timing bits
   // DCC "1"
@@ -374,6 +415,7 @@ static inline void createDccDefaultPackets() {
 // - dma_channel_set_trans_count    => the length (in symbols) of the next packet
 // The third parameter indicates that the DMA should restart
 static inline void transmitNextPacket(DccPacket* packet) {
+  dccTx.currentPacket = packet;              // save, to allow future retransmissions.
   dma_channel_set_read_addr(
       pioTx.dmaChannel,
       packet->symbols,
@@ -387,15 +429,27 @@ static inline void transmitNextPacket(DccPacket* packet) {
 }
 
 
+static void switchEnToPio(void);             // Forward declaration, see E
+
 static inline void procesNextPacket() {
-  // Priority 1: SM was entered earlier and the SM packet must still be repeated
-  if (dccPacketEngine.isServiceModeRepeating()) {
-    transmitNextPacket(&dccTx.userPacket[dccTx.isrPacketIndex]);
+  // Priority 1: inrush protection. Keep repeating the current packet.
+  // Once the inrush time has passed, the EN pin goes back to the PIO
+  // and the packet is repeated once more, hopefully without new nFaults.
+  if (dccTx.inrushActive) {
+    if ((time_us_32() - dccTx.inrushStartUs) >= dccTx.inrushDurationUs) {
+      switchEnToPio();
+      dccTx.inrushActive = false;
+    }
+    transmitNextPacket(dccTx.currentPacket);   // Retransmit current packet
+  }
+  // Priority 2: SM was entered earlier and the SM packet must still be repeated
+  else if (dccPacketEngine.isServiceModeRepeating()) {
+    transmitNextPacket(dccTx.currentPacket); // Retransmit current SM packet
     // Decrement counter (Note: decrease is atomic operation)
     uint8_t repeats = dccTx.smRepeatsRemaining;
     if (repeats > 0) dccTx.smRepeatsRemaining = repeats - 1;
   }
-  // Priority 2: normal case. Send a new user packet, or idle/reset
+  // Priority 3: normal case. Send a new user packet, or idle/reset
   else {
     if (dccTx.userPacketReady) {
       // We received a new packet from the user via the send() method.
@@ -414,7 +468,12 @@ static inline void procesNextPacket() {
         else {transmitNextPacket(&dccTx.resetPacket);}
     }
   }
-  if (dccTx.smRepeatsRemaining == 0) dccPacketEngine.canAcceptPacket = true;
+  // send() may accept a new packet only if no inrush is active, no SM repeats are
+  // pending, and the previous user packet has been taken by the ISR (priority 3 above).
+  // This last test avoids that send() overwrites a buffer that is still in use
+  // (thus avoiding packet loss).
+  if (!dccTx.inrushActive && (dccTx.smRepeatsRemaining == 0) && !dccTx.userPacketReady)
+    dccPacketEngine.canAcceptPacket = true;
 }
 
 
@@ -468,7 +527,6 @@ static void PioSmDccInit(PIO pio, uint sm, uint offset, uint pin) {
   // Step 2: Configure the GPIO pins so they are controlled by the PIO instead of the SIO
   // Since we use multiple pins, pio_gpio_init should be called once per pin.
   // Note that we MUST use consecutive GPIO pins (EN, PH)
-
   pio_gpio_init(pio, pin);
   pio_gpio_init(pio, pin+1);
   // Step 3: Configure the pins. The parameter "2" represents the number of pins
@@ -523,11 +581,56 @@ static void setupPio() {
 
 
 //================================================================================================
-//                                 E: DccPacketEngine class methods
+//                        E: EN Pin Switching (PWM inrush, SIO power off)
 //================================================================================================
+static void setupPwm(void) {
+  // Configure, but do not start, the PWM slice of the EN pin.
+  // Durations are converted into system clock cycles (divider 1).
+  float countsPerUs = F_CPU / 1000000.0f;
+  uint16_t onCounts = (uint16_t)(INRUSH_ON_US * countsPerUs + 0.5f);
+  uint16_t top = (uint16_t)((INRUSH_ON_US + INRUSH_OFF_US) * countsPerUs + 0.5f) - 1;
+  pwmTx.slice = pwm_gpio_to_slice_num(dccPacketEngine.dccRailAuxPin);
+  pwm_config c = pwm_get_default_config();     // free running, divider 1
+  pwm_config_set_wrap(&c, top);
+  pwm_init(pwmTx.slice, &c, false);            // false: do not start yet
+  pwm_set_gpio_level(dccPacketEngine.dccRailAuxPin, onCounts); // Output high while counter < onCounts
+}
 
+static void switchEnToPwm(void) {               // EN pin => PWM
+  uint pin = dccPacketEngine.dccRailAuxPin;
+  pwm_set_counter(pwmTx.slice, 0);              // Start with a complete ON pulse
+  pwm_set_enabled(pwmTx.slice, true);           // start the slice
+  gpio_set_function(pin, GPIO_FUNC_PWM);        // Take EN away from the PIO
+  setPinInverted(pin, !dccTx.auxEnableLevel);   // gpio_set_function resets the inversion
+}
+
+static void switchEnToPio(void) {               // EN pin => PIO
+  uint pin = dccPacketEngine.dccRailAuxPin;
+  pio_gpio_init(pioTx.pio, pin);                // Give EN back to the PIO
+  setPinInverted(pin, !dccTx.auxEnableLevel);   // pio_gpio_init resets the inversion
+  pwm_set_enabled(pwmTx.slice, false);          // stop the slice
+}
+
+static void switchEnToSio(void) {               // EN pin => SIO (Single-cycle IO = software control)
+  uint pin = dccPacketEngine.dccRailAuxPin;
+  gpio_put(pin, 0);                             // EN inactive; set before the switch
+  gpio_set_dir(pin, GPIO_OUT);                  // Set EN as output
+  gpio_set_function(pin, GPIO_FUNC_SIO);        // Take EN away from the PIO or PWM
+  setPinInverted(pin, !dccTx.auxEnableLevel);   // gpio_set_function resets the inversion
+  pwm_set_enabled(pwmTx.slice, false);          // In case an inrush was running
+}
+
+
+// Note: with active-low EN hardware, EN may glitch for a few instructions between
+// gpio_set_function() and setPinInverted(). Writing only FUNCSEL would avoid this.
+// With active-high EN hardware (such as the DRV8874) there are no glitches.
+
+
+//================================================================================================
+//                                 F: DccPacketEngine class methods
+//================================================================================================
 //************************************************************************************************
-// E1: setUp and Send
+// F1: setUp and Send
 //************************************************************************************************
 // As part of setup(), the packet scheduler code should call setupWaveformGenerator.
 // The dccRailPin number must be one higher than the dccRailAuxPin number.
@@ -539,9 +642,14 @@ void DccPacketEngine::setupWaveformGenerator() {
     initTxEngines();
     // Step2: create bit symbols and default packets
     createDccDefaultPackets();
-    // Step 3: Setup the PIO and DMA that feeds the PIO
-    setupPio();
-    setupDma();
+    // Step 3: Setup the PWM for the inrush, the PIO, and the DMA that feeds the PIO.
+    setupPwm();                    // Setup the PWM for the inrush
+    setupPio();                    // Setup the PIO for DCC symbols. PH and EN connect to the PIO
+    switchEnToSio();               // Move EN from the PIO to the SIO, to ensure EN starts OFF
+    setupDma();                    // Start the DMA: the PIO starts sending symbols (PH)
+    // The PIO is now sending DCC symbols via the DCC pin (PH).
+    // The AUX pin (EN) is connected to the SIO and OFF.
+    // Use RunOutputSignal() to (re)connect the AUX pin (EN) to the PIO.
     // Step 4: Restore pin polarities (pio_gpio_init resets them)
     setDccSignalInverted(dccTx.dccSignalInverted);
     setAuxActiveLevel(dccTx.auxEnableLevel);
@@ -584,7 +692,7 @@ void DccPacketEngine::send(const uint8_t* data, uint8_t size) {
 
 
 //******************************************************************************
-// E2. Service Mode interface methods
+// F2. Service Mode interface methods
 //******************************************************************************
 void DccPacketEngine::enterServiceMode(void) {
   // Enable Service Mode behaviour (long preamble, reset packets, SM flow).
@@ -625,18 +733,31 @@ void DccPacketEngine::stopServiceModeRepeats(void) {
 
 
 //******************************************************************************
-// E3. Inrush Protection Mode interface methods
+// F3. Inrush Protection Mode interface methods
 //******************************************************************************
-// Inrush protection is no longer implemented for this variant
-// The empty stubs will be removed later
-void DccPacketEngine::enterInrushMode(void) {}
-void DccPacketEngine::leaveInrushMode(void) {}
-bool DccPacketEngine::isInrushModeEnabled(void) {return false;}
-void DccPacketEngine::useMonitorPinforInrush(bool value) {(void)value;}
+void DccPacketEngine::startInrushMode(uint16_t ms) {
+  if (!dccTx.isInitialized) return;     // Invalid pins
+  if (!dccTx.dccOutputActive) return;   // Power off
+  if (dccTx.inrushActive) return;       // Already active
+  if (ms == 0) return;                  // Invalid duration
+  if (ms > INRUSH_MAX_MS) ms = INRUSH_MAX_MS;
+  dccTx.inrushStartUs = time_us_32();
+  dccTx.inrushDurationUs = ms * 1000;   // Convert from ms => us
+  // Set the flag before EN switches to the PWM. The flag ensures that from now
+  // on the DMA ISR repeats the current packet, to avoid the loss of new packets
+  // during the inrush.
+  dccTx.inrushActive = true;
+  switchEnToPwm();
+}
+
+
+bool DccPacketEngine::isInrushModeEnabled(void) {
+  return dccTx.inrushActive;
+}
 
 
 //******************************************************************************
-// E.4. RailCom interface methods
+// F4. RailCom interface methods
 //******************************************************************************
 // Enable / disable generation of the cutout in the DCC signal on the DCC pin
 void DccPacketEngine::setRailCom(bool active) {
@@ -656,8 +777,9 @@ bool DccPacketEngine::getRailCom(void) {
 // During the gap EN is at its disable level (LOW for the DRV887x), while track
 // power is on (dccOutputActive). gpio_get_all64() reads the pin level after
 // inversion, so we compare with auxEnableLevel.
+// During an inrush EN carries the PWM pulses, so no gap is reported.
 bool DccPacketEngine::railComGap(void) {
-  if (!dccTx.isInitialized || !dccTx.dccOutputActive) return false;
+  if (!dccTx.isInitialized || !dccTx.dccOutputActive || dccTx.inrushActive) return false;
   bool cutoutDetected = ((gpio_get_all64() >> dccRailAuxPin) & 1) != dccTx.auxEnableLevel;
   if (cutoutDetected) {  // To avoid glitches, take a second sample
     cutoutDetected = ((gpio_get_all64() >> dccRailAuxPin) & 1) != dccTx.auxEnableLevel;
@@ -667,28 +789,29 @@ bool DccPacketEngine::railComGap(void) {
 
 
 //******************************************************************************
-// E5: Start / Stop interface methods
+// F5: Start / Stop interface methods
 //******************************************************************************
 // StopOutputSignal() and RunOutputSignal() switch the H-bridge off and on via EN.
-// Both change dccOutputActive and call createDccDefaultPackets(), which rebuilds the
-// symbols: after StopOutputSignal() EN is at its disable level (LOW for the DRV887x),
-// after RunOutputSignal() at its enable level. PH keeps carrying DCC in both cases.
-// Packets that were already built (the current packet, a pending user packet and its
-// Service Mode repeats) keep their old EN level.
+// StopOutputSignal() ends a running inrush, takes EN away from the PIO and sets it via
+// the SIO to its disable level (LOW for the DRV887x). RunOutputSignal() gives EN back
+// to the PIO. Both take effect immediately. PH keeps carrying DCC in both cases.
 void DccPacketEngine::StopOutputSignal() {
   if (!dccTx.dccOutputActive) return;
   dccTx.dccOutputActive = false;
-  createDccDefaultPackets();
+  dccTx.inrushActive = false;           // End a running inrush; the DMA ISR then leaves EN alone
+  switchEnToSio();                      // EN inactive immediately
 }
 
 void DccPacketEngine::RunOutputSignal() {
   if (dccTx.dccOutputActive) return;
+  if (!dccTx.isInitialized) return;     // Invalid pins
   dccTx.dccOutputActive = true;
-  createDccDefaultPackets();
+  switchEnToPio();                      // EN follows the PIO symbols immediately
 }
 
+
 //******************************************************************************
-// E6: Setters to change certain aspects of the DCC encoder
+// F6: Setters to change certain aspects of the DCC encoder
 //******************************************************************************
 void DccPacketEngine::setDccSignalInverted(bool inverted) {
   // Inverts the polarity of the DCC signal (PH). No impact on the Enable signal.
