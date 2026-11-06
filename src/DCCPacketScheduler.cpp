@@ -318,14 +318,22 @@ bool DCCPacketScheduler::setSpeed14(uint16_t address, uint8_t speed)
 	if ((LokDataUpdate[slot].adr >> 14) != DCC14)  //0=>14steps, write speed steps into register
 		LokDataUpdate[slot].adr = (LokDataUpdate[slot].adr & 0x3FFF) | (DCC14 << 14);
 
-	// DCC 14-stap G-GGGG shuffle: bit4=G0(LSB), bits2-0=G3G2G1, G4=0
-	// Input: bit7=richting, bits3-0=logische stap 0..15
+	// DCC 14 steps (RCN-212): 01DF SSSS - D=direction, F=FL (F0),
+	// SSSS=0000 stop, 0001 emergency stop, 0010..1111 steps 1..14.
+	// Input: bit7=direction, bits3-0=step value 0..15 (no shuffle).
+	//
+	// FIX (Rob/LZ210, Nov 2026): this used to apply the 28-step
+	// shuffle (bit4=G0, bits2-0=G3G2G1). Full speed 15 then went out
+	// as x1 0111 (step 6 of 14, or 12 of 28 on a 28-step decoder) and
+	// the first running step as 0001 = emergency stop - locos driven
+	// with 14 steps crawled. Bit 4 is FL in 14-step mode: taken from
+	// the stored F0 (LokDataUpdate.f0 bit4, see setFunctions0to4(),
+	// which re-sends the speed packet when F0 changes in this mode).
 	uint8_t v   = speed & 0x0F;
 	uint8_t dir = (speed & 0x80) ? 0x20 : 0x00;
-	uint8_t shuffled = ((v & 0x01) << 4)   // G0 -> bit4
-	               | ((v >> 1) & 0x07);  // G3G2G1 -> bits2-0
+	uint8_t fl  = LokDataUpdate[slot].f0 & 0x10;   // F0 -> bit4
 	uint8_t speed_data_uint8_ts[] = {0x40};
-	speed_data_uint8_ts[0] |= dir | shuffled;
+	speed_data_uint8_ts[0] |= dir | fl | v;
 
     DCCPacket p(address);
     p.addData(speed_data_uint8_ts,1);
@@ -581,9 +589,17 @@ bool DCCPacketScheduler::setFunctions0to4(uint16_t address, uint8_t functions)
   p.setKind(function_packet_1_kind);
   p.setRepeat(FUNCTION_REPEAT);
 
-  LokDataUpdate[LokStsgetSlot(address)].f0 = (functions & 0x1F) | (LokDataUpdate[LokStsgetSlot(address)].f0 & 0b11100000);	//write into register to SAVE
+  byte slot = LokStsgetSlot(address);
+  uint8_t oldF0 = LokDataUpdate[slot].f0 & 0x10;
+  LokDataUpdate[slot].f0 = (functions & 0x1F) | (LokDataUpdate[slot].f0 & 0b11100000);	//write into register to SAVE
 
-  return repeat_queue.insertPacket(&p);
+  bool ok = repeat_queue.insertPacket(&p);
+  // 14-step decoders take FL from bit 4 of the SPEED instruction (see
+  // setSpeed14()), not from this packet: re-send the speed packet when
+  // F0 changed so the light follows.
+  if ((LokDataUpdate[slot].adr >> 14) == DCC14 && oldF0 != (LokDataUpdate[slot].f0 & 0x10))
+    setSpeed14(address, LokDataUpdate[slot].speed);
+  return ok;
 }
 
 //---------------------------------------------------------------------------------
